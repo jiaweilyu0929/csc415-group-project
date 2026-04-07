@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # CSC415 Group Term Assignment - File System
 
 This is a GROUP assignment written in C.  Only one person on the team needs to submit the project.
@@ -194,3 +195,6 @@ What needs to be submitted (via GitHub):
 * 	Your volume file (limit 10MB)
 *  There will also be an INDIVIDUAL report (form) to complete.
 
+=======
+# csc415-group-project
+>>>>>>> 2a74bce023dc8fb88fd10441c6a9a6b7bc437b6d
