@@ -830,7 +830,6 @@ int main (int argc, char * argv[])
 			exitFileSystem();
 			closePartitionSystem();
 			clear_history();
-			rl_clear_history ();
 			// exit while loop and terminate shell
 			break;
 			}
