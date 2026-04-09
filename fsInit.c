@@ -29,6 +29,9 @@
 #define MAX_FILENAME            255
 #define DIR_ENTRIES             50
 
+/* The superblock is the first thing written to the volume and the first
+ * thing read on startup. It stores the location of every other structure
+ * so the file system knows where to find the bitmap and root directory. */
 typedef struct __attribute__((packed))
         {
         uint32_t magic;
@@ -43,7 +46,9 @@ typedef struct __attribute__((packed))
         uint64_t first_data_lba;
         uint8_t  reserved[64];
         } fs_superblock_t;
-
+/* One directory entry represents one file or folder inside a directory.
+ * Each entry tracks the name, location on disk, size, timestamps,
+ * and whether the slot is currently in use or available. */
 typedef struct __attribute__((packed)) {
         char name[MAX_FILENAME + 1];
         uint8_t  fileType;               
@@ -65,6 +70,9 @@ static int g_fs_mounted = 0;
 static uint8_t *g_bitmap = NULL;
 static uint64_t g_bitmap_blocks = 0;
 
+/* Marks a single block as taken in the bitmap. Each bit in the bitmap
+ * represents one block on disk — 0 means free, 1 means used.
+ * This function flips the correct bit to 1. */
 static void
 bitmap_set_used (uint8_t *bitmap, uint64_t block_idx)
         {
@@ -72,7 +80,9 @@ bitmap_set_used (uint8_t *bitmap, uint64_t block_idx)
         uint64_t bit_idx = block_idx % 8;
         bitmap[byte_idx] |= (uint8_t) (1u << bit_idx);
         }
-
+/* Saves the superblock to block 0 on disk. We write a full block at a
+ * time because the disk only accepts block-sized writes. This ensures
+ * our metadata is saved permanently even if the system restarts. */
 static int
 write_superblock (const fs_superblock_t *sb, uint64_t block_size)
         {
@@ -89,6 +99,9 @@ write_superblock (const fs_superblock_t *sb, uint64_t block_size)
         return 0;
         }
 
+/* Loads block 0 from disk into memory so we can inspect the superblock.
+ * Called at startup to check whether the volume is already formatted
+ * before deciding whether to format or just mount it. */
 static int
 read_superblock (fs_superblock_t *sb, uint64_t block_size)
         {
@@ -105,8 +118,9 @@ read_superblock (fs_superblock_t *sb, uint64_t block_size)
         return 0;
         }
 
-/* Returns 0 if mounted, 1 if no valid FS, -1 on error. */
-static int
+/* Tries to use an existing formatted volume without reformatting it.
+ * Reads the superblock and checks the magic number — if it matches,
+ * the volume is valid and ready to use as-is. */static int
 fs_vol_try_mount (uint64_t numberOfBlocks, uint64_t blockSize)
         {
         fs_superblock_t sb;
@@ -123,6 +137,9 @@ fs_vol_try_mount (uint64_t numberOfBlocks, uint64_t blockSize)
         return 0;
         }
 
+/* Sets up the root directory when the volume is first formatted.
+ * Creates the "." entry (this directory) and ".." entry (parent directory).
+ * Since root has no parent, both entries point to the root itself. */
 static void
 initRootDir(uint64_t root_dir_start, uint64_t blockSize)
         {
@@ -160,7 +177,9 @@ initRootDir(uint64_t root_dir_start, uint64_t blockSize)
         LBAwrite(root, FS_ROOT_DIR_BLOCKS, root_dir_start);
         free(root);
         }
-
+/* Finds and reserves a requested number of contiguous free blocks.
+ * Scans the bitmap for enough consecutive free bits, marks them as used,
+ * and writes the updated bitmap to disk so the change is saved. */
 static int
 allocateBlocks(uint64_t count)
         {
@@ -205,6 +224,9 @@ allocateBlocks(uint64_t count)
         return -1;
         }
 
+/* Formats the volume from scratch when no valid file system is found.
+ * Sets up the bitmap to track free space, initializes the root directory,
+ * and writes the superblock last to confirm everything was successful. */
 static int
 fs_vol_format (uint64_t numberOfBlocks, uint64_t blockSize)
         {
@@ -281,7 +303,9 @@ fs_vol_format (uint64_t numberOfBlocks, uint64_t blockSize)
                 (unsigned long long) first_data_lba);
         return 0;
         }
-
+/* The main entry point called when the file system starts up.
+ * First checks if the volume is already formatted and tries to mount it.
+ * If not, it formats the volume fresh before returning. */
 int 
 initFileSystem (uint64_t numberOfBlocks, uint64_t blockSize)
 	{
@@ -307,6 +331,9 @@ initFileSystem (uint64_t numberOfBlocks, uint64_t blockSize)
 	return 0;
 	}
 
+/* Called when the file system shuts down cleanly.
+ * Marks the volume as unmounted. A full implementation would also
+ * flush any unsaved data to disk before closing. */
 void
 exitFileSystem (void)
 	{
