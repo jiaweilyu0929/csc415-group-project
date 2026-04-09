@@ -21,6 +21,7 @@
 #include <stdint.h>
 
 #include "fsLow.h"
+#include <time.h>
 
 #define FS_MAGIC                0x46534331u  /* 'FSC1' */
 #define FS_VERSION              1u
@@ -55,8 +56,14 @@ typedef struct __attribute__((packed)) {
         time_t   accessTime;             
 } fs_dirent_t;
 
+static void initRootDir(uint64_t root_dir_start, uint64_t blockSize);
+static int fs_vol_format(uint64_t numberOfBlocks, uint64_t blockSize);
+
 static fs_superblock_t g_fs_sb;
 static int g_fs_mounted = 0;
+
+static uint8_t *g_bitmap = NULL;
+static uint64_t g_bitmap_blocks = 0;
 
 static void
 bitmap_set_used (uint8_t *bitmap, uint64_t block_idx)
@@ -116,82 +123,6 @@ fs_vol_try_mount (uint64_t numberOfBlocks, uint64_t blockSize)
         return 0;
         }
 
-static int
-fs_vol_format (uint64_t numberOfBlocks, uint64_t blockSize)
-        {
-        fs_superblock_t sb;
-        uint64_t bitmap_bytes;
-        uint64_t bitmap_block_count;
-        uint64_t root_dir_start;
-        uint64_t first_data_lba;
-        uint8_t *bitmap = NULL;
-        uint64_t i;
-
-        memset (&sb, 0, sizeof (sb));
-        if (numberOfBlocks < 8 || blockSize < 64)
-                return -1;
-
-        bitmap_bytes = (numberOfBlocks + 7) / 8;
-        bitmap_block_count = (bitmap_bytes + blockSize - 1) / blockSize;
-        root_dir_start = 1 + bitmap_block_count;
-        first_data_lba = root_dir_start + FS_ROOT_DIR_BLOCKS;
-
-        if (first_data_lba > numberOfBlocks)
-                {
-                fprintf (stderr, "fs_vol_format: volume too small for metadata\n");
-                return -1;
-                }
-
-        bitmap = calloc (1, (size_t) (bitmap_block_count * blockSize));
-        if (bitmap == NULL)
-                return -1;
-
-        for (i = 0; i < first_data_lba; i++)
-                bitmap_set_used (bitmap, i);
-
-        {
-        uint64_t total_bits = bitmap_block_count * blockSize * 8;
-        for (i = numberOfBlocks; i < total_bits; i++)
-                bitmap_set_used (bitmap, i);
-        }
-
-        sb.magic = FS_MAGIC;
-        sb.version = FS_VERSION;
-        sb.block_size = blockSize;
-        sb.total_blocks = numberOfBlocks;
-        sb.free_block_count = numberOfBlocks - first_data_lba;
-        sb.bitmap_start_lba = 1;
-        sb.bitmap_block_count = bitmap_block_count;
-        sb.root_dir_start_lba = root_dir_start;
-        sb.root_dir_block_count = FS_ROOT_DIR_BLOCKS;
-        sb.first_data_lba = first_data_lba;
-
-        if (write_superblock (&sb, blockSize) != 0)
-                {
-                free (bitmap);
-                return -1;
-                }
-
-        if (LBAwrite (bitmap, bitmap_block_count, sb.bitmap_start_lba)
-            != bitmap_block_count)
-                {
-                free (bitmap);
-                return -1;
-                }
-        free (bitmap);
-        bitmap = NULL;
-        
-        initRootDir(root_dir_start, blockSize);
-
-        memcpy (&g_fs_sb, &sb, sizeof (fs_superblock_t));
-        g_fs_mounted = 1;
-        printf ("Volume formatted: %llu blocks, %llu bytes/block, "
-                "data starts at LBA %llu\n",
-                (unsigned long long) numberOfBlocks,
-                (unsigned long long) blockSize,
-                (unsigned long long) first_data_lba);
-        return 0;
-        }
 static void
 initRootDir(uint64_t root_dir_start, uint64_t blockSize)
         {
@@ -230,6 +161,127 @@ initRootDir(uint64_t root_dir_start, uint64_t blockSize)
         free(root);
         }
 
+static int
+allocateBlocks(uint64_t count)
+        {
+        if (g_bitmap == NULL)
+                {
+                fprintf(stderr, "allocateBlocks: bitmap not initialized\n");
+                return -1;
+                }
+
+        uint64_t totalBlocks = g_fs_sb.total_blocks;
+        uint64_t found       = 0;
+        uint64_t startBlock  = 0;
+
+        for (uint64_t i = 0; i < totalBlocks; i++)
+                {
+                uint64_t byte_idx = i / 8;
+                uint64_t bit_idx  = i % 8;
+
+                if (!(g_bitmap[byte_idx] & (1u << bit_idx)))
+                        {
+                        if (found == 0) startBlock = i;
+                        found++;
+                        if (found == count)
+                                {
+                                for (uint64_t j = startBlock; j < startBlock + count; j++)
+                                        {
+                                        g_bitmap[j / 8] |= (1u << (j % 8));
+                                        }
+                                g_fs_sb.free_block_count -= count;
+                                LBAwrite(g_bitmap, g_bitmap_blocks,
+                                         g_fs_sb.bitmap_start_lba);
+                                return (int)startBlock;
+                                }
+                        }
+                else
+                        {
+                        found = 0;
+                        }
+                }
+
+        fprintf(stderr, "allocateBlocks: not enough contiguous free blocks\n");
+        return -1;
+        }
+
+static int
+fs_vol_format (uint64_t numberOfBlocks, uint64_t blockSize)
+        {
+        fs_superblock_t sb;
+        uint64_t bitmap_bytes;
+        uint64_t bitmap_block_count;
+        uint64_t root_dir_start;
+        uint64_t first_data_lba;
+        uint8_t *bitmap = NULL;
+        uint64_t i;
+
+        memset (&sb, 0, sizeof (sb));
+        if (numberOfBlocks < 8 || blockSize < 64)
+                return -1;
+
+        bitmap_bytes = (numberOfBlocks + 7) / 8;
+        bitmap_block_count = (bitmap_bytes + blockSize - 1) / blockSize;
+        root_dir_start = 1 + bitmap_block_count;
+        first_data_lba = root_dir_start + FS_ROOT_DIR_BLOCKS;
+
+        if (first_data_lba > numberOfBlocks)
+                {
+                fprintf (stderr, "fs_vol_format: volume too small for metadata\n");
+                return -1;
+                }
+
+        bitmap = calloc (1, (size_t) (bitmap_block_count * blockSize));
+        if (bitmap == NULL)
+                return -1;
+
+        for (i = 0; i < first_data_lba; i++)
+                bitmap_set_used (bitmap, i);
+
+        {
+        uint64_t total_bits = bitmap_block_count * blockSize * 8;
+        for (i = numberOfBlocks; i < total_bits; i++)
+                bitmap_set_used (bitmap, i);
+        }
+        g_bitmap = bitmap;
+        g_bitmap_blocks = bitmap_block_count;
+
+        sb.magic = FS_MAGIC;
+        sb.version = FS_VERSION;
+        sb.block_size = blockSize;
+        sb.total_blocks = numberOfBlocks;
+        sb.free_block_count = numberOfBlocks - first_data_lba;
+        sb.bitmap_start_lba = 1;
+        sb.bitmap_block_count = bitmap_block_count;
+        sb.root_dir_start_lba = root_dir_start;
+        sb.root_dir_block_count = FS_ROOT_DIR_BLOCKS;
+        sb.first_data_lba = first_data_lba;
+
+        if (write_superblock (&sb, blockSize) != 0)
+                {
+                free (bitmap);
+                return -1;
+                }
+
+        if (LBAwrite (bitmap, bitmap_block_count, sb.bitmap_start_lba)
+            != bitmap_block_count)
+                {
+                free (bitmap);
+                return -1;
+                }
+        
+        initRootDir(root_dir_start, blockSize);
+
+        memcpy (&g_fs_sb, &sb, sizeof (fs_superblock_t));
+        g_fs_mounted = 1;
+        printf ("Volume formatted: %llu blocks, %llu bytes/block, "
+                "data starts at LBA %llu\n",
+                (unsigned long long) numberOfBlocks,
+                (unsigned long long) blockSize,
+                (unsigned long long) first_data_lba);
+        return 0;
+        }
+
 int 
 initFileSystem (uint64_t numberOfBlocks, uint64_t blockSize)
 	{
@@ -254,7 +306,6 @@ initFileSystem (uint64_t numberOfBlocks, uint64_t blockSize)
 	printf ("File system ready.\n");
 	return 0;
 	}
-
 
 void
 exitFileSystem (void)
