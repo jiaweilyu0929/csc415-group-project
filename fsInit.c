@@ -25,11 +25,13 @@
 #define FS_MAGIC                0x46534331u  /* 'FSC1' */
 #define FS_VERSION              1u
 #define FS_ROOT_DIR_BLOCKS      4
+#define MAX_FILENAME            255
+#define DIR_ENTRIES             50
 
 typedef struct __attribute__((packed))
         {
         uint32_t magic;
-        uint32_t version;
+        uint32_t version;    
         uint64_t block_size;
         uint64_t total_blocks;
         uint64_t free_block_count;
@@ -38,8 +40,20 @@ typedef struct __attribute__((packed))
         uint64_t root_dir_start_lba;
         uint64_t root_dir_block_count;
         uint64_t first_data_lba;
-        uint8_t reserved[64];
+        uint8_t  reserved[64];
         } fs_superblock_t;
+
+typedef struct __attribute__((packed)) {
+        char name[MAX_FILENAME + 1];
+        uint8_t  fileType;               
+        uint8_t  inUse;                  
+        uint64_t startBlock;             
+        uint64_t blockCount;          
+        uint64_t size;            
+        time_t   createTime;       
+        time_t   modifiedTime;           
+        time_t   accessTime;             
+} fs_dirent_t;
 
 static fs_superblock_t g_fs_sb;
 static int g_fs_mounted = 0;
@@ -111,7 +125,6 @@ fs_vol_format (uint64_t numberOfBlocks, uint64_t blockSize)
         uint64_t root_dir_start;
         uint64_t first_data_lba;
         uint8_t *bitmap = NULL;
-        uint8_t *zero_buf = NULL;
         uint64_t i;
 
         memset (&sb, 0, sizeof (sb));
@@ -167,17 +180,8 @@ fs_vol_format (uint64_t numberOfBlocks, uint64_t blockSize)
                 }
         free (bitmap);
         bitmap = NULL;
-
-        zero_buf = calloc (FS_ROOT_DIR_BLOCKS, (size_t) blockSize);
-        if (zero_buf == NULL)
-                return -1;
-        if (LBAwrite (zero_buf, FS_ROOT_DIR_BLOCKS, root_dir_start)
-            != FS_ROOT_DIR_BLOCKS)
-                {
-                free (zero_buf);
-                return -1;
-                }
-        free (zero_buf);
+        
+        initRootDir(root_dir_start, blockSize);
 
         memcpy (&g_fs_sb, &sb, sizeof (fs_superblock_t));
         g_fs_mounted = 1;
@@ -188,9 +192,45 @@ fs_vol_format (uint64_t numberOfBlocks, uint64_t blockSize)
                 (unsigned long long) first_data_lba);
         return 0;
         }
+static void
+initRootDir(uint64_t root_dir_start, uint64_t blockSize)
+        {
+        uint64_t dirBytes      = FS_ROOT_DIR_BLOCKS * blockSize;
+        int      actualEntries = (int)(dirBytes / sizeof(fs_dirent_t));
+         fs_dirent_t *root      = calloc(FS_ROOT_DIR_BLOCKS, (size_t)blockSize);
+         if (root == NULL)
+        {
+        fprintf(stderr, "initRootDir: calloc failed\n");
+        return;
+        }
 
+        time_t now = time(NULL);
 
-int
+        strncpy(root[0].name, ".", MAX_FILENAME);
+        root[0].fileType     = 2;
+        root[0].inUse        = 1;
+        root[0].startBlock   = root_dir_start;
+        root[0].blockCount   = FS_ROOT_DIR_BLOCKS;
+        root[0].size         = dirBytes;
+        root[0].createTime   = now;
+        root[0].modifiedTime = now;
+        root[0].accessTime   = now;
+
+        strncpy(root[1].name, "..", MAX_FILENAME);
+        root[1].fileType     = 2;
+        root[1].inUse        = 1;
+        root[1].startBlock   = root_dir_start;
+        root[1].blockCount   = FS_ROOT_DIR_BLOCKS;
+        root[1].size         = dirBytes;
+        root[1].createTime   = now;
+        root[1].modifiedTime = now;
+        root[1].accessTime   = now;
+
+        LBAwrite(root, FS_ROOT_DIR_BLOCKS, root_dir_start);
+        free(root);
+        }
+
+int 
 initFileSystem (uint64_t numberOfBlocks, uint64_t blockSize)
 	{
 	int r;
