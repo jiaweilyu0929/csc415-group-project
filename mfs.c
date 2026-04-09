@@ -1,9 +1,9 @@
 /**************************************************************
 * Class::  CSC-415-0# Fall 2025
-* Name::
-* Student IDs::
+* Name:: Jiawei Lyu, Leslie Raya, Alexandra Borders, Yeraldin Crespo
+* Student IDs:: 923809065, 921813630, 913630008, 923523819
 * GitHub-Name::
-* Group-Name::
+* Group-Name:: Team #1
 * Project:: Basic File System
 *
 * File:: mfs.c
