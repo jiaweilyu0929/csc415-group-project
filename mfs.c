@@ -8,8 +8,8 @@
 *
 * File:: mfs.c
 *
-* Description:: Directory API stubs (Phase 2+) and minimal cwd
-*   helpers so the shell can build. Full implementation pending.
+* Description:: Directory API stubs (Phase 2+). fs_getcwd / fs_setcwd keep
+*   the logical cwd string in this file (path normalization only; no disk walk).
 *
 **************************************************************/
 
@@ -19,6 +19,74 @@
 #include <errno.h>
 
 #include "mfs.h"
+
+#define FS_CWD_MAX 4096
+
+static char g_fs_cwd[FS_CWD_MAX] = "/";
+
+/* Used only by fs_setcwd: resolve relative paths and normalize . / .. / extra slashes. */
+static int
+path_canonicalize (char *out, size_t outlen, const char *cwd, const char *inpath)
+	{
+	char work[FS_CWD_MAX];
+	char wcopy[FS_CWD_MAX];
+	const char *parts[256];
+	int np = 0;
+
+	if (inpath == NULL || out == NULL || outlen < 2)
+		return -1;
+	if (inpath[0] == '\0')
+		return -1;
+
+	if (inpath[0] == '/')
+		snprintf (work, sizeof work, "%s", inpath);
+	else if (strcmp (cwd, "/") == 0)
+		snprintf (work, sizeof work, "/%s", inpath);
+	else
+		snprintf (work, sizeof work, "%s/%s", cwd, inpath);
+
+	strncpy (wcopy, work, sizeof wcopy - 1);
+	wcopy[sizeof wcopy - 1] = '\0';
+
+	char *saveptr = NULL;
+	for (char *tok = strtok_r (wcopy, "/", &saveptr); tok != NULL;
+	     tok = strtok_r (NULL, "/", &saveptr))
+		{
+		if (strcmp (tok, ".") == 0)
+			continue;
+		if (strcmp (tok, "..") == 0)
+			{
+			if (np > 0)
+				np--;
+			continue;
+			}
+		if (np >= (int)(sizeof parts / sizeof parts[0]))
+			return -1;
+		parts[np++] = tok;
+		}
+
+	if (np == 0)
+		{
+		out[0] = '/';
+		out[1] = '\0';
+		return 0;
+		}
+
+	size_t pos = 0;
+	out[pos++] = '/';
+	for (int i = 0; i < np; i++)
+		{
+		size_t L = strlen (parts[i]);
+		if (pos + L + (i < np - 1 ? 1 : 0) >= outlen)
+			return -1;
+		memcpy (out + pos, parts[i], L);
+		pos += L;
+		if (i < np - 1)
+			out[pos++] = '/';
+		}
+	out[pos] = '\0';
+	return 0;
+	}
 
 int
 fs_mkdir (const char *pathname, mode_t mode)
@@ -68,22 +136,40 @@ fs_closedir (fdDir *dirp)
 char *
 fs_getcwd (char *pathbuffer, size_t size)
 	{
-	if (pathbuffer == NULL || size < 2)
+	size_t len;
+
+	if (pathbuffer == NULL || size == 0)
+		{
+		errno = EINVAL;
 		return NULL;
-	strncpy (pathbuffer, "/", size);
-	pathbuffer[size - 1] = '\0';
+		}
+	len = strlen (g_fs_cwd);
+	if (len + 1 > size)
+		{
+		errno = ERANGE;
+		return NULL;
+		}
+	memcpy (pathbuffer, g_fs_cwd, len + 1);
 	return pathbuffer;
 	}
 
 int
 fs_setcwd (char *pathname)
 	{
+	char canon[FS_CWD_MAX];
+
 	if (pathname == NULL)
+		{
+		errno = EINVAL;
 		return -1;
-	if (strcmp (pathname, "/") == 0)
-		return 0;
-	errno = ENOSYS;
-	return -1;
+		}
+	if (path_canonicalize (canon, sizeof canon, g_fs_cwd, pathname) != 0)
+		{
+		errno = ENAMETOOLONG;
+		return -1;
+		}
+	memcpy (g_fs_cwd, canon, strlen (canon) + 1);
+	return 0;
 	}
 
 int
