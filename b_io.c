@@ -1,9 +1,9 @@
 /**************************************************************
-* Class::  CSC-415-0# Fall 2025
-* Name::
-* Student IDs::
-* GitHub-Name::
-* Group-Name::
+* Class::  CSC-415-3# Fall 2025
+* Name:: Leslie Raya
+* Student IDs::921813630
+* GitHub-Name::jiaweilyu0929
+* Group-Name:: Team #1
 * Project:: Basic File System
 *
 * File:: b_io.c
@@ -22,134 +22,208 @@
 #include "b_io.h"
 
 #define MAXFCBS 20
+#define BLOCK_SIZE 512   
 
 typedef struct b_fcb
 	{
 	/** TODO add al the information you need in the file control block **/
-	char * buf;		//holds the open file buffer
-	int index;		//holds the current position in the buffer
-	int buflen;		//holds how many valid bytes are in the buffer
+	char * buf;		
+	int index;		
+	int buflen;		
+
+	int fd;          
+	int filePos;     
+	int fileSize;    
+	int flags;      
+
 	} b_fcb;
 	
 b_fcb fcbArray[MAXFCBS];
 
-int startup = 0;	//Indicates that this has not been initialized
+int startup = 0;
 
-//Method to initialize our file system
+//to initialize our file system
 void b_init ()
 	{
-	//init fcbArray to all free
 	for (int i = 0; i < MAXFCBS; i++)
 		{
-		fcbArray[i].buf = NULL; //indicates a free fcbArray
+		fcbArray[i].buf = NULL;
 		}
-		
 	startup = 1;
 	}
 
-//Method to get a free FCB element
+//to get a free FCB element
 b_io_fd b_getFCB ()
 	{
 	for (int i = 0; i < MAXFCBS; i++)
 		{
 		if (fcbArray[i].buf == NULL)
 			{
-			return i;		//Not thread safe (But do not worry about it for this assignment)
+			return i;
 			}
 		}
-	return (-1);  //all in use
+	return (-1);
 	}
 	
 // Interface to open a buffered file
-// Modification of interface for this assignment, flags match the Linux flags for open
-// O_RDONLY, O_WRONLY, or O_RDWR
 b_io_fd b_open (char * filename, int flags)
 	{
 	b_io_fd returnFd;
 
-	//*** TODO ***:  Modify to save or set any information needed
-	//
-	//
-		
-	if (startup == 0) b_init();  //Initialize our system
+	if (startup == 0) b_init();
 	
-	returnFd = b_getFCB();				// get our own file descriptor
-										// check for error - all used FCB's
+	returnFd = b_getFCB();
+
+	if (returnFd < 0) return -1;
+
+	int osfd = open(filename, flags, 0666);   
+	if (osfd < 0) return -1;
+
+	fcbArray[returnFd].fd = osfd;              
+	fcbArray[returnFd].buf = malloc(BLOCK_SIZE); 
+	fcbArray[returnFd].index = 0;
+	fcbArray[returnFd].buflen = 0;
+	fcbArray[returnFd].filePos = 0;
+	fcbArray[returnFd].flags = flags;
+
+	struct stat st;                         
+	if (fstat(osfd, &st) == 0)
+		fcbArray[returnFd].fileSize = st.st_size;
+	else
+		fcbArray[returnFd].fileSize = 0;
 	
-	return (returnFd);						// all set
+	return (returnFd);
 	}
 
 
 // Interface to seek function	
 int b_seek (b_io_fd fd, off_t offset, int whence)
 	{
-	if (startup == 0) b_init();  //Initialize our system
+	if (startup == 0) b_init();
 
-	// check that fd is between 0 and (MAXFCBS-1)
 	if ((fd < 0) || (fd >= MAXFCBS))
 		{
-		return (-1); 					//invalid file descriptor
+		return (-1);
 		}
 		
-		
-	return (0); //Change this
-	}
+	if (whence == SEEK_SET)
+		fcbArray[fd].filePos = offset;
+	else if (whence == SEEK_CUR)
+		fcbArray[fd].filePos += offset;
+	else if (whence == SEEK_END)
+		fcbArray[fd].filePos = fcbArray[fd].fileSize + offset;
 
+	lseek(fcbArray[fd].fd, fcbArray[fd].filePos, SEEK_SET);  
+
+	fcbArray[fd].index = 0;   // reset buffer
+	fcbArray[fd].buflen = 0;
+
+	return (fcbArray[fd].filePos);
+	}
 
 
 // Interface to write function	
 int b_write (b_io_fd fd, char * buffer, int count)
 	{
-	if (startup == 0) b_init();  //Initialize our system
+	if (startup == 0) b_init();
 
-	// check that fd is between 0 and (MAXFCBS-1)
 	if ((fd < 0) || (fd >= MAXFCBS))
 		{
-		return (-1); 					//invalid file descriptor
+		return (-1);
 		}
 		
-		
-	return (0); //Change this
+	int bytesWritten = write(fcbArray[fd].fd, buffer, count); 
+
+	if (bytesWritten > 0)
+		fcbArray[fd].filePos += bytesWritten;
+
+	return (bytesWritten);
 	}
 
 
-
 // Interface to read a buffer
-
-// Filling the callers request is broken into three parts
-// Part 1 is what can be filled from the current buffer, which may or may not be enough
-// Part 2 is after using what was left in our buffer there is still 1 or more block
-//        size chunks needed to fill the callers request.  This represents the number of
-//        bytes in multiples of the blocksize.
-// Part 3 is a value less than blocksize which is what remains to copy to the callers buffer
-//        after fulfilling part 1 and part 2.  This would always be filled from a refill 
-//        of our buffer.
-//  +-------------+------------------------------------------------+--------+
-//  |             |                                                |        |
-//  | filled from |  filled direct in multiples of the block size  | filled |
-//  | existing    |                                                | from   |
-//  | buffer      |                                                |refilled|
-//  |             |                                                | buffer |
-//  |             |                                                |        |
-//  | Part1       |  Part 2                                        | Part3  |
-//  +-------------+------------------------------------------------+--------+
 int b_read (b_io_fd fd, char * buffer, int count)
 	{
 
-	if (startup == 0) b_init();  //Initialize our system
+	if (startup == 0) b_init();
 
-	// check that fd is between 0 and (MAXFCBS-1)
 	if ((fd < 0) || (fd >= MAXFCBS))
 		{
-		return (-1); 					//invalid file descriptor
+		return (-1);
 		}
+
+	int bytesCopied = 0;
+
+	// Part 1: use existing buffer
+	// 
+	int available = fcbArray[fd].buflen - fcbArray[fd].index;
+
+	if (available > 0)
+	{
+		int toCopy = (count < available) ? count : available;
+
+		memcpy(buffer,
+			   fcbArray[fd].buf + fcbArray[fd].index,
+			   toCopy);
+
+		fcbArray[fd].index += toCopy;
+		bytesCopied += toCopy;
+	}
+
+	
+	// Part 2: full block reads
+	int remaining = count - bytesCopied;
+
+	if (remaining >= BLOCK_SIZE)
+	{
+		int blocks = remaining / BLOCK_SIZE;
+		int bytesToRead = blocks * BLOCK_SIZE;
+
+		int readBytes = read(fcbArray[fd].fd,
+							 buffer + bytesCopied,
+							 bytesToRead);
+
+		bytesCopied += readBytes;
+	}
+
+	// Part 3: leftover bytes
+	remaining = count - bytesCopied;
+
+	if (remaining > 0)
+	{
+		int bytes = read(fcbArray[fd].fd,
+						 fcbArray[fd].buf,
+						 BLOCK_SIZE);
+
+		if (bytes > 0)
+		{
+			fcbArray[fd].buflen = bytes;
+			fcbArray[fd].index = 0;
+
+			int toCopy = (remaining < bytes) ? remaining : bytes;
+
+			memcpy(buffer + bytesCopied,
+				   fcbArray[fd].buf,
+				   toCopy);
+
+			fcbArray[fd].index += toCopy;
+			bytesCopied += toCopy;
+		}
+	}
 		
-	return (0);	//Change this
+	return (bytesCopied);
 	}
 	
 // Interface to Close the file	
 int b_close (b_io_fd fd)
 	{
-	(void) fd;
+	if ((fd < 0) || (fd >= MAXFCBS))
+		return -1;
+
+	close(fcbArray[fd].fd);       
+
+	free(fcbArray[fd].buf);        
+	fcbArray[fd].buf = NULL;
+
 	return (0);
 	}

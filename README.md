@@ -31,8 +31,8 @@ Each .c and .h file must have a standard header as defined below.  Make sure to 
 ```
 /**************************************************************
 * Class::  CSC-415-0# Fall 2025
-* Name::
-* Student IDs::
+* Name::Leslie Raya, 
+* Student IDs::921813630, 
 * GitHub-Name::
 * Group-Name::
 * Project:: Basic File System
