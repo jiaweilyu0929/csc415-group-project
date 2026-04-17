@@ -29,6 +29,10 @@
 #define MAX_FILENAME            255
 #define DIR_ENTRIES             50
 
+/* dirent.fileType — keep the same when creating files vs directories elsewhere */
+#define FS_FTYPE_REG 1u
+#define FS_FTYPE_DIR 2u
+
 /* The superblock is the first thing written to the volume and the first
  * thing read on startup. It stores the location of every other structure
  * so the file system knows where to find the bitmap and root directory. */
@@ -155,7 +159,7 @@ initRootDir(uint64_t root_dir_start, uint64_t blockSize)
         time_t now = time(NULL);
 
         strncpy(root[0].name, ".", MAX_FILENAME);
-        root[0].fileType     = 2;
+        root[0].fileType     = FS_FTYPE_DIR;
         root[0].inUse        = 1;
         root[0].startBlock   = root_dir_start;
         root[0].blockCount   = FS_ROOT_DIR_BLOCKS;
@@ -165,7 +169,7 @@ initRootDir(uint64_t root_dir_start, uint64_t blockSize)
         root[0].accessTime   = now;
 
         strncpy(root[1].name, "..", MAX_FILENAME);
-        root[1].fileType     = 2;
+        root[1].fileType     = FS_FTYPE_DIR;
         root[1].inUse        = 1;
         root[1].startBlock   = root_dir_start;
         root[1].blockCount   = FS_ROOT_DIR_BLOCKS;
@@ -335,8 +339,79 @@ initFileSystem (uint64_t numberOfBlocks, uint64_t blockSize)
  * Marks the volume as unmounted. A full implementation would also
  * flush any unsaved data to disk before closing. */
 void
-exitFileSystem (void)
+	exitFileSystem (void)
 	{
 	printf ("System exiting\n");
 	g_fs_mounted = 0;
+	}
+
+/* Last path component's fileType, or -1 if missing / error. abs must start with '/'. */
+int
+fs_vol_last_component_type (const char *abs_path)
+	{
+	char buf[4096];
+	char *saveptr = NULL;
+	uint64_t cur_lba;
+	uint64_t cur_nb;
+
+	if (!g_fs_mounted || abs_path == NULL || abs_path[0] != '/')
+		return -1;
+	if (abs_path[1] == '\0')
+		return (int) FS_FTYPE_DIR;
+
+	strncpy (buf, abs_path, sizeof buf - 1);
+	buf[sizeof buf - 1] = '\0';
+
+	cur_lba = g_fs_sb.root_dir_start_lba;
+	cur_nb = g_fs_sb.root_dir_block_count;
+
+	for (char *token = strtok_r (buf + 1, "/", &saveptr); token != NULL; )
+		{
+		char *next_tok = strtok_r (NULL, "/", &saveptr);
+		int is_last = (next_tok == NULL);
+		size_t dbytes = (size_t) (cur_nb * g_fs_sb.block_size);
+		fs_dirent_t *de;
+		uint64_t nslot;
+		int found = 0;
+		uint8_t ft = 0;
+
+		if (dbytes == 0 || dbytes % sizeof (fs_dirent_t) != 0)
+			return -1;
+		de = malloc (dbytes);
+		if (de == NULL)
+			return -1;
+		if (LBAread (de, cur_nb, cur_lba) != cur_nb)
+			{
+			free (de);
+			return -1;
+			}
+		nslot = dbytes / sizeof (fs_dirent_t);
+		for (uint64_t i = 0; i < nslot; i++)
+			{
+			if (!de[i].inUse)
+				continue;
+			if (strcmp (de[i].name, token) != 0)
+				continue;
+			found = 1;
+			ft = de[i].fileType;
+			if (is_last)
+				{
+				free (de);
+				return (int) ft;
+				}
+			if (ft != FS_FTYPE_DIR)
+				{
+				free (de);
+				return -1;
+				}
+			cur_lba = de[i].startBlock;
+			cur_nb = de[i].blockCount;
+			break;
+			}
+		free (de);
+		if (!found)
+			return -1;
+		token = next_tok;
+		}
+	return -1;
 	}

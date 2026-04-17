@@ -1,44 +1,229 @@
-[33mcommit 5a3ac823e78a0ee3b713245b5a87cdde0c68da90[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31mgroup/main[m[33m)[m
-Author: Leslie Raya <youremail@example.com>
-Date:   Mon Apr 13 17:14:41 2026 -0700
+/**************************************************************
+* Class::  CSC-415-0# Fall 2025
+* Name:: Jiawei Lyu, Leslie Raya, Alexandra Borders, Yeraldin Crespo
+* Student IDs:: 923809065, 921813630, 913630008, 923523819
+* GitHub-Name::
+* Group-Name:: Team #1
+* Project:: Basic File System
+*
+* File:: mfs.c
+*
+* Description:: Directory API stubs (Phase 2+). fs_getcwd / fs_setcwd and
+*   fs_isDir / fs_isFile (path normalize + lookup via fsInit).
+*
+**************************************************************/
 
-    update
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
 
-README.md
-b_io.c
+#include "mfs.h"
 
-[33mcommit d406a7d8aee26a4cbeaba8421c05072f786f72ec[m[33m ([m[1;31morigin/main[m[33m)[m
-Author: jiaweilyu0929 <lvjiawei0929@gmail.com>
-Date:   Mon Apr 13 14:40:12 2026 -0700
+#define FS_CWD_MAX 4096
 
-    Enable cd/pwd in fsshell; implement fs_getcwd and fs_setcwd in mfs.c
+static char g_fs_cwd[FS_CWD_MAX] = "/";
 
-fsshell.c
-mfs.c
+extern int fs_vol_last_component_type (const char *abs_path);
 
-[33mcommit 5b04698786dfafed462db712987737d3f3ddfb87[m
-Author: jiaweilyu0929 <lvjiawei0929@gmail.com>
-Date:   Wed Apr 8 22:04:37 2026 -0700
+/* Used only by fs_setcwd: resolve relative paths and normalize . / .. / extra slashes. */
+static int
+path_canonicalize (char *out, size_t outlen, const char *cwd, const char *inpath)
+	{
+	char work[FS_CWD_MAX];
+	char wcopy[FS_CWD_MAX];
+	const char *parts[256];
+	int np = 0;
 
-    Add files via upload
+	if (inpath == NULL || out == NULL || outlen < 2)
+		return -1;
+	if (inpath[0] == '\0')
+		return -1;
 
-Team1_Milestone1_WriteUp .pdf
+	if (inpath[0] == '/')
+		snprintf (work, sizeof work, "%s", inpath);
+	else if (strcmp (cwd, "/") == 0)
+		snprintf (work, sizeof work, "/%s", inpath);
+	else
+		snprintf (work, sizeof work, "%s/%s", cwd, inpath);
 
-[33mcommit a78d7dc30566e189d7bf12676efff6c1214e21d9[m
-Author: Yeraldin2 <yeraldincrespo47@gmail.com>
-Date:   Wed Apr 8 21:54:43 2026 -0700
+	strncpy (wcopy, work, sizeof wcopy - 1);
+	wcopy[sizeof wcopy - 1] = '\0';
 
-    headers
+	char *saveptr = NULL;
+	for (char *tok = strtok_r (wcopy, "/", &saveptr); tok != NULL;
+	     tok = strtok_r (NULL, "/", &saveptr))
+		{
+		if (strcmp (tok, ".") == 0)
+			continue;
+		if (strcmp (tok, "..") == 0)
+			{
+			if (np > 0)
+				np--;
+			continue;
+			}
+		if (np >= (int)(sizeof parts / sizeof parts[0]))
+			return -1;
+		parts[np++] = tok;
+		}
 
-fsInit.c
-fsshell.c
-mfs.c
-mfs.h
+	if (np == 0)
+		{
+		out[0] = '/';
+		out[1] = '\0';
+		return 0;
+		}
 
-[33mcommit f0a5fbd84dbebfba819e2899f5296ab65d93e9eb[m
-Author: Alexandra Borders <alex.j.borders@gmail.com>
-Date:   Wed Apr 8 18:47:27 2026 -0700
+	size_t pos = 0;
+	out[pos++] = '/';
+	for (int i = 0; i < np; i++)
+		{
+		size_t L = strlen (parts[i]);
+		if (pos + L + (i < np - 1 ? 1 : 0) >= outlen)
+			return -1;
+		memcpy (out + pos, parts[i], L);
+		pos += L;
+		if (i < np - 1)
+			out[pos++] = '/';
+		}
+	out[pos] = '\0';
+	return 0;
+	}
 
-    Add descriptive comments to all functions in fsInit.c
+/* Turn shell paths into an absolute path (uses cwd when path is relative). */
+static int
+resolve_lookup_path (char *out, size_t outlen, const char *path)
+	{
+	if (path == NULL)
+		return -1;
+	return path_canonicalize (out, outlen, g_fs_cwd, path);
+	}
 
-fsInit.c
+int
+fs_mkdir (const char *pathname, mode_t mode)
+	{
+	(void) pathname;
+	(void) mode;
+	errno = ENOSYS;
+	return -1;
+	}
+
+int
+fs_rmdir (const char *pathname)
+	{
+	(void) pathname;
+	errno = ENOSYS;
+	return -1;
+	}
+
+fdDir *
+fs_opendir (const char *pathname)
+	{
+	(void) pathname;
+	errno = ENOSYS;
+	return NULL;
+	}
+
+struct fs_diriteminfo *
+fs_readdir (fdDir *dirp)
+	{
+	if (dirp == NULL)
+		return NULL;
+	errno = ENOSYS;
+	return NULL;
+	}
+
+int
+fs_closedir (fdDir *dirp)
+	{
+	if (dirp == NULL)
+		return -1;
+	if (dirp->di != NULL)
+		free (dirp->di);
+	free (dirp);
+	return 0;
+	}
+
+char *
+fs_getcwd (char *pathbuffer, size_t size)
+	{
+	size_t len;
+
+	if (pathbuffer == NULL || size == 0)
+		{
+		errno = EINVAL;
+		return NULL;
+		}
+	len = strlen (g_fs_cwd);
+	if (len + 1 > size)
+		{
+		errno = ERANGE;
+		return NULL;
+		}
+	memcpy (pathbuffer, g_fs_cwd, len + 1);
+	return pathbuffer;
+	}
+
+int
+fs_setcwd (char *pathname)
+	{
+	char canon[FS_CWD_MAX];
+
+	if (pathname == NULL)
+		{
+		errno = EINVAL;
+		return -1;
+		}
+	if (path_canonicalize (canon, sizeof canon, g_fs_cwd, pathname) != 0)
+		{
+		errno = ENAMETOOLONG;
+		return -1;
+		}
+	memcpy (g_fs_cwd, canon, strlen (canon) + 1);
+	return 0;
+	}
+
+int
+fs_isFile (char *filename)
+	{
+	char abs[FS_CWD_MAX];
+	int t;
+
+	if (filename == NULL)
+		return 0;
+	if (resolve_lookup_path (abs, sizeof abs, filename) != 0)
+		return 0;
+	t = fs_vol_last_component_type (abs);
+	return (t == 1) ? 1 : 0;
+	}
+
+int
+fs_isDir (char *pathname)
+	{
+	char abs[FS_CWD_MAX];
+	int t;
+
+	if (pathname == NULL)
+		return 0;
+	if (resolve_lookup_path (abs, sizeof abs, pathname) != 0)
+		return 0;
+	t = fs_vol_last_component_type (abs);
+	return (t == 2) ? 1 : 0;
+	}
+
+int
+fs_delete (char *filename)
+	{
+	(void) filename;
+	errno = ENOSYS;
+	return -1;
+	}
+
+int
+fs_stat (const char *path, struct fs_stat *buf)
+	{
+	(void) path;
+	(void) buf;
+	errno = ENOSYS;
+	return -1;
+	}
