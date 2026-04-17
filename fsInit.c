@@ -184,7 +184,7 @@ initRootDir(uint64_t root_dir_start, uint64_t blockSize)
 /* Finds and reserves a requested number of contiguous free blocks.
  * Scans the bitmap for enough consecutive free bits, marks them as used,
  * and writes the updated bitmap to disk so the change is saved. */
-static int
+int
 allocateBlocks(uint64_t count)
         {
         if (g_bitmap == NULL)

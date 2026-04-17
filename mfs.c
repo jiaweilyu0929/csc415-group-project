@@ -19,12 +19,16 @@
 #include <errno.h>
 
 #include "mfs.h"
+#include "fsLow.h"
+#include <time.h>
 
 #define FS_CWD_MAX 4096
 
 static char g_fs_cwd[FS_CWD_MAX] = "/";
 
 extern int fs_vol_last_component_type (const char *abs_path);
+
+extern int allocateBlocks(uint64_t count);
 
 /* Used only by fs_setcwd: resolve relative paths and normalize . / .. / extra slashes. */
 static int
