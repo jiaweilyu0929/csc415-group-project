@@ -1018,11 +1018,70 @@ fs_delete (char *filename)
 	}
 
 
+/* ---------------------------------------------------------------
+ * fs_stat
+ *
+ * Fills in a fs_stat struct with metadata about the file or
+ * directory at the given path. This is similar to the standard
+ * POSIX stat() call -- it lets programs inspect a file's size,
+ * timestamps, and disk usage without actually reading its data.
+ *
+ * We use ParsePath to walk to the entry on disk, then copy the
+ * relevant fields from the fs_dirent_t into buf.
+ *
+ * Special case: if the path is "/" we read the "." entry from
+ * root (index 0) since root has no parent entry to look up.
+ *
+ * Fields filled in:
+ *   st_size        -- exact byte size stored in the directory entry
+ *   st_blksize     -- our volume's block size (from the superblock)
+ *   st_blocks      -- number of 512-byte units the entry occupies
+ *                     (POSIX convention is always 512-byte units
+ *                     regardless of actual block size)
+ *   st_accesstime  -- time the entry was last accessed
+ *   st_modtime     -- time the entry's content was last modified
+ *   st_createtime  -- time the entry was originally created
+ *
+ * Returns 0 on success, -1 on error (errno set).
+ * --------------------------------------------------------------- */
 int
 fs_stat (const char *path, struct fs_stat *buf)
 	{
-	(void) path;
-	(void) buf;
-	errno = ENOSYS;
-	return -1;
+	if (path == NULL || buf == NULL)
+		{
+		errno = EINVAL;
+		return -1;
+		}
+
+	parsepath_info ppi;
+	if (ParsePath (path, &ppi) != 0)
+		{
+		errno = ENOENT;
+		return -1;
+		}
+
+	fs_dirent_t *de;
+
+	if (ppi.index == -2)
+		de = &ppi.parent[0];
+	else if (ppi.index >= 0)
+		de = &ppi.parent[ppi.index];
+	else
+		{
+		free (ppi.parent);
+		free (ppi.lastElementName);
+		errno = ENOENT;
+		return -1;
+		}
+
+	buf->st_size       = (off_t)     de->size;
+	buf->st_blksize    = (blksize_t) g_fs_sb.block_size;
+	buf->st_blocks     = (blkcnt_t) (de->blockCount * g_fs_sb.block_size / 512);
+	buf->st_accesstime = de->accessTime;
+	buf->st_modtime    = de->modifiedTime;
+	buf->st_createtime = de->createTime;
+
+	free (ppi.parent);
+	free (ppi.lastElementName);
+	return 0;
 	}
