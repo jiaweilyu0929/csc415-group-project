@@ -21,8 +21,53 @@
 #include "mfs.h"
 #include "fsLow.h"
 #include <time.h>
+#include <stdint.h>
 
 #define FS_CWD_MAX 4096
+#define FS_ROOT_DIR_BLOCKS  4
+#define MAX_FILENAME        255
+#define FS_FTYPE_DIR        2u
+#define FS_FTYPE_REG        1u
+
+/* Forward declaration of superblock — defined in fsInit.c */
+typedef struct __attribute__((packed))
+	{
+	uint32_t magic;
+	uint32_t version;
+	uint64_t block_size;
+	uint64_t total_blocks;
+	uint64_t free_block_count;
+	uint64_t bitmap_start_lba;
+	uint64_t bitmap_block_count;
+	uint64_t root_dir_start_lba;
+	uint64_t root_dir_block_count;
+	uint64_t first_data_lba;
+	uint8_t  reserved[64];
+	} fs_superblock_t;
+
+/* Directory entry — defined in fsInit.c */
+typedef struct __attribute__((packed))
+	{
+	char     name[256];
+	uint8_t  fileType;
+	uint8_t  inUse;
+	uint64_t startBlock;
+	uint64_t blockCount;
+	uint64_t size;
+	time_t   createTime;
+	time_t   modifiedTime;
+	time_t   accessTime;
+	} fs_dirent_t;
+
+/* Holds result of ParsePath */
+typedef struct
+	{
+	fs_dirent_t *parent;
+	int          index;
+	char        *lastElementName;
+	} parsepath_info;
+
+extern fs_superblock_t g_fs_sb;
 
 static char g_fs_cwd[FS_CWD_MAX] = "/";
 
@@ -102,6 +147,162 @@ resolve_lookup_path (char *out, size_t outlen, const char *path)
 		return -1;
 	return path_canonicalize (out, outlen, g_fs_cwd, path);
 	}
+
+/* Loads a directory from disk into a malloc'd buffer.
+ * Takes the starting LBA block and block count from a
+ * directory entry and returns a pointer to the loaded
+ * directory array. Caller is responsible for freeing it.
+ * Returns NULL upon failure. */
+static fs_dirent_t *
+LoadDir (fs_dirent_t *entry)
+	{
+	/* Calculate how many bytes the directory occupies on disk. */
+	size_t dirBytes = (size_t)(entry->blockCount * g_fs_sb.block_size);
+
+	fs_dirent_t *dir = malloc (dirBytes);
+	if (dir == NULL)
+		return NULL;
+
+	/* Read the directory blocks from disk into our buffer. */
+	if (LBAread (dir, entry->blockCount, entry->startBlock)
+	    != entry->blockCount)
+		{
+		free (dir);
+		return NULL;
+		}
+
+	return dir;
+	}
+
+/* Searches a loaded directory for an entry matching name.
+ * Returns the index of the matching entry if found,
+ * or -1 if no entry with that name exists.
+ * This lets ParsePath and fs_mkdir know exactly which
+ * slot holds the entry they are looking for. */
+static int
+FindEntryInDir (fs_dirent_t *dir, const char *name)
+	{
+	/* How many entries fit in this directory?
+	 * dir[0].size holds the total byte size of the directory,
+	 * so dividing by the entry size gives us the slot count. */
+	int count = dir[0].size / sizeof (fs_dirent_t);
+
+	for (int i = 0; i < count; i++)
+		{
+		if (dir[i].inUse && strcmp (dir[i].name, name) == 0)
+			return i;
+		}
+
+	return -1;  // no name found
+	}
+
+/* ParsePath: walks a file path one component at a time and fills
+ * in a parsepath_info struct so the caller knows:
+ *   - which directory is the PARENT of the last element
+ *   - what INDEX in that parent the last element is at (-1 if not found yet)
+ *   - what the LAST ELEMENT NAME is (e.g. "bar" in "/foo/bar")
+ *
+ * Caller must free ppi->parent and ppi->lastElementName when done. */
+static int
+ParsePath (const char *path, parsepath_info *ppi)
+	{
+	/* Can't work with a NULL path or NULL output struct */
+	if (path == NULL || ppi == NULL)
+		return -1;
+
+	/* Turn whatever the user typed (relative or absolute) into
+	 * a clean absolute path like "/foo/bar" */
+	char abs[FS_CWD_MAX];
+	if (resolve_lookup_path (abs, sizeof abs, path) != 0)
+		return -1;
+
+	/* Build a fake directory entry for root so we can use
+	 * LoadDir on it — we get root's location from the superblock */
+	fs_dirent_t root_entry;
+	root_entry.startBlock = g_fs_sb.root_dir_start_lba;
+	root_entry.blockCount = g_fs_sb.root_dir_block_count;
+	root_entry.size       = g_fs_sb.root_dir_block_count
+	                        * g_fs_sb.block_size;
+
+	/* Load the root directory from disk into memory — this is
+	 * our starting point for walking the path */
+	fs_dirent_t *current = LoadDir (&root_entry);
+	if (current == NULL)
+		return -1;
+
+	/* Special case: path is just "/" meaning root IS the target.
+	 * index -2 means "this directory itself is what was asked for" */
+	if (abs[1] == '\0')
+		{
+		ppi->parent          = current;
+		ppi->index           = -2;
+		ppi->lastElementName = NULL;
+		return 0;
+		}
+
+	/* Copy the path skipping the leading '/' so strtok_r can
+	 * split it into individual components like "foo", "bar" */
+	char buf[FS_CWD_MAX];
+	strncpy (buf, abs + 1, sizeof buf - 1);
+	buf[sizeof buf - 1] = '\0';
+
+	/* token = current component we are looking at
+	 * next  = the component AFTER token (NULL if token is last)
+	 * We peek at next so we know when to stop walking */
+	char *saveptr = NULL;
+	char *token   = strtok_r (buf, "/", &saveptr);
+	char *next    = strtok_r (NULL, "/", &saveptr);
+
+	while (token != NULL)
+		{
+		if (next == NULL)
+			{
+			/* token is the LAST component — we are done walking.
+			 * current is the parent directory we want.
+			 * Look up token in the parent to get its index
+			 * (-1 means it doesn't exist yet, which is fine for mkdir) */
+			ppi->parent          = current;
+			ppi->index           = FindEntryInDir (current, token);
+			ppi->lastElementName = strdup (token);
+			return 0;
+			}
+
+		/* token is a MIDDLE component — it must exist and must
+		 * be a directory so we can keep walking into it */
+		int idx = FindEntryInDir (current, token);
+		if (idx == -1)
+			{
+			/* A middle component doesn't exist — invalid path */
+			free (current);
+			return -1;
+			}
+
+		/* Make sure the middle component is actually a directory
+		 * and not a file — you can't walk into a file */
+		if (current[idx].fileType != FS_FTYPE_DIR)
+			{
+			free (current);
+			return -1;
+			}
+
+		/* Load the next directory from disk and free the
+		 * current one since we no longer need it in memory */
+		fs_dirent_t *next_dir = LoadDir (&current[idx]);
+		free (current);
+		if (next_dir == NULL)
+			return -1;
+
+		/* Move forward — next_dir becomes our new current,
+		 * advance both token and next to the next components */
+		current = next_dir;
+		token   = next;
+		next    = strtok_r (NULL, "/", &saveptr);
+		}
+
+	/* Should not reach here but free and return error if we do */
+	free (current);
+	return -1;
+	} 
 
 int
 fs_mkdir (const char *pathname, mode_t mode)
