@@ -629,9 +629,89 @@ fs_mkdir (const char *pathname, mode_t mode)
 int
 fs_rmdir (const char *pathname)
 	{
-	(void) pathname;
-	errno = ENOSYS;
-	return -1;
+	parsepath_info ppi;
+	fs_dirent_t *child;
+	fs_dirent_t *child_entries = NULL;
+	int entry_count;
+
+	if (pathname == NULL)
+		{
+		errno = EINVAL;
+		return -1;
+		}
+
+	if (ParsePath (pathname, &ppi) != 0)
+		{
+		errno = ENOENT;
+		return -1;
+		}
+
+	/* ParsePath uses -2 to signal "/" (root). */
+	if (ppi.index == -2 || ppi.lastElementName == NULL)
+		{
+		free (ppi.parent);
+		free (ppi.lastElementName);
+		errno = EBUSY;
+		return -1;
+		}
+
+	if (ppi.index < 0)
+		{
+		free (ppi.parent);
+		free (ppi.lastElementName);
+		errno = ENOENT;
+		return -1;
+		}
+
+	if (ppi.parent[ppi.index].fileType != FS_FTYPE_DIR)
+		{
+		free (ppi.parent);
+		free (ppi.lastElementName);
+		errno = ENOTDIR;
+		return -1;
+		}
+
+	child = &ppi.parent[ppi.index];
+	child_entries = LoadDir (child);
+	if (child_entries == NULL)
+		{
+		free (ppi.parent);
+		free (ppi.lastElementName);
+		errno = EIO;
+		return -1;
+		}
+
+	entry_count = (int) (child_entries[0].size / sizeof (fs_dirent_t));
+	for (int i = 0; i < entry_count; i++)
+		{
+		if (!child_entries[i].inUse)
+			continue;
+		if (strcmp (child_entries[i].name, ".") == 0
+		    || strcmp (child_entries[i].name, "..") == 0)
+			continue;
+		free (child_entries);
+		free (ppi.parent);
+		free (ppi.lastElementName);
+		errno = ENOTEMPTY;
+		return -1;
+		}
+	free (child_entries);
+
+	memset (&ppi.parent[ppi.index], 0, sizeof (fs_dirent_t));
+	if (LBAwrite (ppi.parent,
+	              ppi.parent[0].blockCount,
+	              ppi.parent[0].startBlock)
+	    != ppi.parent[0].blockCount)
+		{
+		free (ppi.parent);
+		free (ppi.lastElementName);
+		errno = EIO;
+		return -1;
+		}
+
+	free (ppi.parent);
+	free (ppi.lastElementName);
+	return 0;
 	}
 
 
@@ -1012,9 +1092,51 @@ fs_isDir (char *pathname)
 int
 fs_delete (char *filename)
 	{
-	(void) filename;
-	errno = ENOSYS;
-	return -1;
+	parsepath_info ppi;
+
+	if (filename == NULL)
+		{
+		errno = EINVAL;
+		return -1;
+		}
+
+	if (ParsePath (filename, &ppi) != 0)
+		{
+		errno = ENOENT;
+		return -1;
+		}
+
+	if (ppi.index < 0)
+		{
+		free (ppi.parent);
+		free (ppi.lastElementName);
+		errno = ENOENT;
+		return -1;
+		}
+
+	if (ppi.parent[ppi.index].fileType != FS_FTYPE_REG)
+		{
+		free (ppi.parent);
+		free (ppi.lastElementName);
+		errno = EISDIR;
+		return -1;
+		}
+
+	memset (&ppi.parent[ppi.index], 0, sizeof (fs_dirent_t));
+	if (LBAwrite (ppi.parent,
+	              ppi.parent[0].blockCount,
+	              ppi.parent[0].startBlock)
+	    != ppi.parent[0].blockCount)
+		{
+		free (ppi.parent);
+		free (ppi.lastElementName);
+		errno = EIO;
+		return -1;
+		}
+
+	free (ppi.parent);
+	free (ppi.lastElementName);
+	return 0;
 	}
 
 
