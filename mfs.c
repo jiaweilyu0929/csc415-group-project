@@ -1207,3 +1207,143 @@ fs_stat (const char *path, struct fs_stat *buf)
 	free (ppi.lastElementName);
 	return 0;
 	}
+
+#define FS_FILE_DATA_BLOCKS 1u
+
+int
+mfs_volume_open (char *filename, int flags, mfs_b_open_ctx *ctx)
+	{
+	parsepath_info ppi;
+
+	if (filename == NULL || ctx == NULL)
+		{
+		errno = EINVAL;
+		return -1;
+		}
+	memset (ctx, 0, sizeof (*ctx));
+
+	if (ParsePath (filename, &ppi) != 0)
+		{
+		errno = ENOENT;
+		return -1;
+		}
+
+	if (ppi.index == -2)
+		{
+		free (ppi.parent);
+		free (ppi.lastElementName);
+		errno = EISDIR;
+		return -1;
+		}
+
+	if (ppi.index >= 0)
+		{
+		if (ppi.parent[ppi.index].fileType == FS_FTYPE_DIR)
+			{
+			free (ppi.parent);
+			free (ppi.lastElementName);
+			errno = EISDIR;
+			return -1;
+			}
+		if (ppi.parent[ppi.index].fileType != FS_FTYPE_REG)
+			{
+			free (ppi.parent);
+			free (ppi.lastElementName);
+			errno = EINVAL;
+			return -1;
+			}
+		ctx->parent_dir = ppi.parent;
+		ctx->parent_start_lba = ppi.parent[0].startBlock;
+		ctx->parent_block_count = (uint32_t) ppi.parent[0].blockCount;
+		ctx->entry_index = ppi.index;
+		ctx->file_start_lba = ppi.parent[ppi.index].startBlock;
+		ctx->file_block_count = (uint32_t) ppi.parent[ppi.index].blockCount;
+		ctx->file_size = ppi.parent[ppi.index].size;
+		ctx->fs_block_size = g_fs_sb.block_size;
+		free (ppi.lastElementName);
+		return 0;
+		}
+
+	if (!(flags & O_CREAT))
+		{
+		free (ppi.parent);
+		free (ppi.lastElementName);
+		errno = ENOENT;
+		return -1;
+		}
+	if (ppi.lastElementName == NULL)
+		{
+		free (ppi.parent);
+		errno = EINVAL;
+		return -1;
+		}
+	if (strlen (ppi.lastElementName) > MAX_FILENAME)
+		{
+		free (ppi.parent);
+		free (ppi.lastElementName);
+		errno = ENAMETOOLONG;
+		return -1;
+		}
+
+	int newStart = allocateBlocks (FS_FILE_DATA_BLOCKS);
+	if (newStart < 0)
+		{
+		free (ppi.parent);
+		free (ppi.lastElementName);
+		errno = ENOSPC;
+		return -1;
+		}
+
+	int parentSlots = (int) (ppi.parent[0].size / sizeof (fs_dirent_t));
+	int freeSlot = -1;
+	for (int i = 0; i < parentSlots; i++)
+		{
+		if (!ppi.parent[i].inUse)
+			{
+			freeSlot = i;
+			break;
+			}
+		}
+	if (freeSlot < 0)
+		{
+		free (ppi.parent);
+		free (ppi.lastElementName);
+		errno = ENOSPC;
+		return -1;
+		}
+
+	time_t now = time (NULL);
+	memset (&ppi.parent[freeSlot], 0, sizeof (fs_dirent_t));
+	strncpy (ppi.parent[freeSlot].name, ppi.lastElementName, MAX_FILENAME);
+	ppi.parent[freeSlot].name[MAX_FILENAME] = '\0';
+	ppi.parent[freeSlot].fileType     = FS_FTYPE_REG;
+	ppi.parent[freeSlot].inUse        = 1;
+	ppi.parent[freeSlot].startBlock   = (uint64_t) newStart;
+	ppi.parent[freeSlot].blockCount   = FS_FILE_DATA_BLOCKS;
+	ppi.parent[freeSlot].size         = 0;
+	ppi.parent[freeSlot].createTime   = now;
+	ppi.parent[freeSlot].modifiedTime = now;
+	ppi.parent[freeSlot].accessTime   = now;
+
+	if (LBAwrite (ppi.parent,
+	              ppi.parent[0].blockCount,
+	              ppi.parent[0].startBlock)
+	    != ppi.parent[0].blockCount)
+		{
+		free (ppi.parent);
+		free (ppi.lastElementName);
+		errno = EIO;
+		return -1;
+		}
+
+	ctx->parent_dir = ppi.parent;
+	ctx->parent_start_lba = ppi.parent[0].startBlock;
+	ctx->parent_block_count = (uint32_t) ppi.parent[0].blockCount;
+	ctx->entry_index = freeSlot;
+	ctx->file_start_lba = (uint64_t) newStart;
+	ctx->file_block_count = FS_FILE_DATA_BLOCKS;
+	ctx->file_size = 0;
+	ctx->fs_block_size = g_fs_sb.block_size;
+	free (ppi.lastElementName);
+	return 0;
+	}

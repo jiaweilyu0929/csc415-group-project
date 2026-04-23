@@ -85,5 +85,20 @@ struct fs_stat
 
 int fs_stat(const char *path, struct fs_stat *buf);
 
+/* Volume file open (ParsePath + dirent). Wire into b_open when the group is ready. */
+typedef struct mfs_b_open_ctx
+	{
+	void *parent_dir;
+	uint64_t parent_start_lba;
+	uint32_t parent_block_count;
+	int entry_index;
+	uint64_t file_start_lba;
+	uint32_t file_block_count;
+	uint64_t file_size;
+	uint64_t fs_block_size;
+	} mfs_b_open_ctx;
+
+int mfs_volume_open (char *filename, int flags, mfs_b_open_ctx *ctx);
+
 #endif
 
