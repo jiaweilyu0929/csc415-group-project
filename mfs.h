@@ -100,5 +100,8 @@ typedef struct mfs_b_open_ctx
 
 int mfs_volume_open (char *filename, int flags, mfs_b_open_ctx *ctx);
 
+/* Write size (and mtime) to the parent dirent, LBAwrite parent, free parent_dir. */
+int mfs_volume_close (mfs_b_open_ctx *ctx, uint64_t file_size);
+
 #endif
 

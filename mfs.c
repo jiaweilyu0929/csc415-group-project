@@ -1347,3 +1347,37 @@ mfs_volume_open (char *filename, int flags, mfs_b_open_ctx *ctx)
 	free (ppi.lastElementName);
 	return 0;
 	}
+
+int
+mfs_volume_close (mfs_b_open_ctx *ctx, uint64_t file_size)
+	{
+	if (ctx == NULL || ctx->parent_dir == NULL)
+		return 0;
+
+	fs_dirent_t *dir = (fs_dirent_t *) ctx->parent_dir;
+	int entry = ctx->entry_index;
+	int nslots = (int) (dir[0].size / sizeof (fs_dirent_t));
+
+	if (entry < 0 || entry >= nslots || !dir[entry].inUse)
+		{
+		free (dir);
+		ctx->parent_dir = NULL;
+		errno = EINVAL;
+		return -1;
+		}
+
+	dir[entry].size = file_size;
+	dir[entry].modifiedTime = time (NULL);
+
+	uint64_t bc = dir[0].blockCount;
+	uint64_t sb = dir[0].startBlock;
+	uint64_t wc = LBAwrite (dir, bc, sb);
+	free (dir);
+	ctx->parent_dir = NULL;
+	if (wc != bc)
+		{
+		errno = EIO;
+		return -1;
+		}
+	return 0;
+	}
