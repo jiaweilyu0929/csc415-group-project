@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <stdint.h>
 #include <limits.h>
 #include <sys/types.h>
@@ -23,6 +24,7 @@
 #include <fcntl.h>
 #include "b_io.h"
 #include "mfs.h"
+#include "fsLow.h"
 
 #define MAXFCBS 20
 #define BLOCK_SIZE 512
@@ -59,6 +61,90 @@ vol_reset_buf_cursor (b_fcb *f)
 	{
 	f->buflen = 0;
 	f->index = 0;
+	}
+
+static int
+b_write_volume (b_fcb *f, const char *buffer, int count)
+	{
+	if (count <= 0)
+		return 0;
+
+	if ((f->flags & O_ACCMODE) == O_RDONLY)
+		{
+		errno = EBADF;
+		return -1;
+		}
+
+	uint64_t blockSize = f->vol.fs_block_size;
+	uint64_t maxBytes = vol_capacity_bytes (f);
+	if (blockSize == 0 || maxBytes == 0)
+		{
+		errno = ENOSPC;
+		return -1;
+		}
+
+	if (f->flags & O_APPEND)
+		f->filePos = (f->vol_file_size > (uint64_t) INT_MAX)
+		                 ? INT_MAX
+		                 : (int) f->vol_file_size;
+
+	if ((uint64_t) f->filePos >= maxBytes)
+		{
+		errno = ENOSPC;
+		return -1;
+		}
+
+	int totalWritten = 0;
+	while (totalWritten < count)
+		{
+		uint64_t curPos = (uint64_t) f->filePos;
+		if (curPos >= maxBytes)
+			{
+			if (totalWritten == 0)
+				errno = ENOSPC;
+			break;
+			}
+
+		uint64_t blockIndex = curPos / blockSize;
+		uint64_t blockOffset = curPos % blockSize;
+		uint64_t roomInBlock = blockSize - blockOffset;
+		uint64_t remainingCap = maxBytes - curPos;
+		int chunk = count - totalWritten;
+
+		if ((uint64_t) chunk > roomInBlock)
+			chunk = (int) roomInBlock;
+		if ((uint64_t) chunk > remainingCap)
+			chunk = (int) remainingCap;
+
+		uint64_t lba = f->vol.file_start_lba + blockIndex;
+		if (LBAread (f->buf, 1, lba) != 1)
+			{
+			errno = EIO;
+			return (totalWritten > 0) ? totalWritten : -1;
+			}
+
+		memcpy (f->buf + blockOffset, buffer + totalWritten, (size_t) chunk);
+
+		if (LBAwrite (f->buf, 1, lba) != 1)
+			{
+			errno = EIO;
+			return (totalWritten > 0) ? totalWritten : -1;
+			}
+
+		f->filePos += chunk;
+		totalWritten += chunk;
+		}
+
+	if (f->vol_file_size < (uint64_t) f->filePos)
+		f->vol_file_size = (uint64_t) f->filePos;
+
+	f->fileSize = (f->vol_file_size > (uint64_t) INT_MAX)
+	                  ? INT_MAX
+	                  : (int) f->vol_file_size;
+
+	/* Keep read-buffer state consistent after volume writes. */
+	vol_reset_buf_cursor (f);
+	return totalWritten;
 	}
 
 void b_init ()
@@ -201,6 +287,9 @@ int b_write (b_io_fd fd, char * buffer, int count)
 
 	if ((fd < 0) || (fd >= MAXFCBS))
 		return (-1);
+
+	if (fcbArray[fd].vol_open)
+		return b_write_volume (&fcbArray[fd], buffer, count);
 
 	int bytesWritten = write (fcbArray[fd].fd, buffer, count);
 
