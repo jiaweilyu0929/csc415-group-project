@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # CSC415 Group Term Assignment - File System
 
 This is a GROUP assignment written in C.  Only one person on the team needs to submit the project.
