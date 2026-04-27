@@ -73,7 +73,7 @@ typedef struct __attribute__((packed)) {
 static void initRootDir(uint64_t root_dir_start, uint64_t blockSize);
 static int fs_vol_format(uint64_t numberOfBlocks, uint64_t blockSize);
 
-static fs_superblock_t g_fs_sb;
+fs_superblock_t g_fs_sb;
 static int g_fs_mounted = 0;
 
 static uint8_t *g_bitmap = NULL;
