@@ -25,7 +25,12 @@
 
 #define FS_MAGIC                0x46534331u  /* 'FSC1' */
 #define FS_VERSION              1u
-#define FS_ROOT_DIR_BLOCKS      4
+/* FIX: Increased from 4 to 8 blocks.
+ * fs_dirent_t is 312 bytes; at 512 bytes/block, 4 blocks = 2048 bytes = only 6
+ * entries total (including . and ..), leaving just 4 usable slots per directory.
+ * 8 blocks = 4096 bytes = 13 entries, giving 11 usable slots — much more practical.
+ * NOTE: delete SampleVolume and reformat whenever this value changes. */
+#define FS_ROOT_DIR_BLOCKS      8
 #define MAX_FILENAME            255
 #define DIR_ENTRIES             50
 
@@ -124,7 +129,9 @@ read_superblock (fs_superblock_t *sb, uint64_t block_size)
 
 /* Tries to use an existing formatted volume without reformatting it.
  * Reads the superblock and checks the magic number — if it matches,
- * the volume is valid and ready to use as-is. */static int
+ * the volume is valid and ready to use as-is. */
+
+static int
 fs_vol_try_mount (uint64_t numberOfBlocks, uint64_t blockSize)
         {
         fs_superblock_t sb;
@@ -136,8 +143,29 @@ fs_vol_try_mount (uint64_t numberOfBlocks, uint64_t blockSize)
         if (sb.block_size != blockSize || sb.total_blocks != numberOfBlocks)
                 return -1;
 
+        /* Save the on-disk superblock into our global so every other function
+         * can read volume geometry (block size, total blocks, LBA offsets) without
+         * re-reading block 0 every time. */
         memcpy (&g_fs_sb, &sb, sizeof (fs_superblock_t));
-        g_fs_mounted = 1;
+
+        /* FIX: Reload the bitmap from disk into memory on every mount.
+         * Previously g_bitmap stayed NULL after a clean mount, so the very
+         * first call to allocateBlocks() would fail with "bitmap not initialized".
+         * Now we read the bitmap blocks back into a freshly allocated buffer so
+         * allocateBlocks() and freeBlocks() work correctly without a reformat. */
+        g_bitmap_blocks = sb.bitmap_block_count;  /* how many blocks the bitmap spans */
+        g_bitmap = malloc ((size_t) (g_bitmap_blocks * blockSize)); /* one byte per 8 blocks */
+        if (g_bitmap == NULL)           /* allocation failed — cannot continue */
+                return -1;
+        if (LBAread (g_bitmap, g_bitmap_blocks, sb.bitmap_start_lba)
+            != g_bitmap_blocks)         /* short read means disk error */
+                {
+                free (g_bitmap);        /* avoid leak before returning */
+                g_bitmap = NULL;        /* reset so callers see uninitialized state */
+                return -1;
+                }
+
+        g_fs_mounted = 1;   /* volume is ready; allow all FS operations */
         return 0;
         }
 
@@ -226,6 +254,26 @@ allocateBlocks(uint64_t count)
 
         fprintf(stderr, "allocateBlocks: not enough contiguous free blocks\n");
         return -1;
+        }
+
+/* Releases a previously allocated run of blocks back to the free pool.
+ * Clears each bit in the bitmap, updates the free block count in the
+ * superblock, and flushes the bitmap to disk so the change persists. */
+int
+freeBlocks (uint64_t startBlock, uint64_t count)
+        {
+        if (g_bitmap == NULL)           /* bitmap must be loaded before we can free */
+                {
+                fprintf (stderr, "freeBlocks: bitmap not initialized\n");
+                return -1;
+                }
+        /* Clear one bit per block in the range — 0 means free in our bitmap */
+        for (uint64_t i = startBlock; i < startBlock + count; i++)
+                g_bitmap[i / 8] &= ~(uint8_t)(1u << (i % 8)); /* clear bit i */
+        g_fs_sb.free_block_count += count;  /* keep the superblock count accurate */
+        /* Flush updated bitmap to disk so freed space survives a restart */
+        LBAwrite (g_bitmap, g_bitmap_blocks, g_fs_sb.bitmap_start_lba);
+        return 0;
         }
 
 /* Formats the volume from scratch when no valid file system is found.
