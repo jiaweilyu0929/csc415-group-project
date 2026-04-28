@@ -1018,7 +1018,6 @@ int
 fs_setcwd (char *pathname)
 	{
 	char canon[FS_CWD_MAX];
-	int t;
 
 	if (pathname == NULL)
 		{
@@ -1033,12 +1032,41 @@ fs_setcwd (char *pathname)
 		return -1;
 		}
 
-	t = fs_vol_last_component_type (canon);
-	if (t != (int) FS_FTYPE_DIR) {
-
-		errno = (t == (int) FS_FTYPE_REG) ? ENOTDIR : ENOENT;
+	/* FIX: Use ParsePath instead of fs_vol_last_component_type.
+	 * fs_vol_last_component_type only searches the original root directory
+	 * loaded at format time and cannot find directories created afterward.
+	 * ParsePath walks the live on-disk directory tree and finds any
+	 * directory regardless of when it was created. */
+	parsepath_info ppi;
+	if (ParsePath (canon, &ppi) != 0)
+		{
+		errno = ENOENT;
 		return -1;
-	}
+		}
+
+	/* Make sure the target is actually a directory, not a file.
+	 * index == -2 means the path was "/" which is always a directory.
+	 * index >= 0 means we found the entry -- check its fileType. */
+	if (ppi.index != -2)
+		{
+		if (ppi.index < 0)
+			{
+			free (ppi.parent);
+			free (ppi.lastElementName);
+			errno = ENOENT;
+			return -1;
+			}
+		if (ppi.parent[ppi.index].fileType != FS_FTYPE_DIR)
+			{
+			free (ppi.parent);
+			free (ppi.lastElementName);
+			errno = ENOTDIR;
+			return -1;
+			}
+		}
+
+	free (ppi.parent);
+	free (ppi.lastElementName);
 
 	/* Replace the stored working directory with the cleaned path. */
 	memcpy (g_fs_cwd, canon, strlen (canon) + 1);
