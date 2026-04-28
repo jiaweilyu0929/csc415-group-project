@@ -16,7 +16,6 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
 #include <stdint.h>
 #include <limits.h>
 #include <sys/types.h>
@@ -64,87 +63,97 @@ vol_reset_buf_cursor (b_fcb *f)
 	}
 
 static int
-b_write_volume (b_fcb *f, const char *buffer, int count)
+b_read_volume (b_io_fd fd, char *buffer, int count)
 	{
-	if (count <= 0)
+	b_fcb *f = &fcbArray[fd];
+	uint64_t bs = f->vol.fs_block_size;
+	int copied = 0;
+
+	if (bs == 0 || f->vol.file_block_count == 0 || count <= 0)
 		return 0;
 
+	while (copied < count && (uint64_t) f->filePos < f->vol_file_size)
+		{
+		uint64_t filePos = (uint64_t) f->filePos;
+		uint64_t blk = filePos / bs;
+		uint64_t off = filePos % bs;
+		uint64_t remainFile = f->vol_file_size - filePos;
+		uint64_t remainBlk = bs - off;
+		int need = count - copied;
+		int chunk = need;
+
+		if (blk >= f->vol.file_block_count)
+			break;
+		if ((uint64_t) chunk > remainFile)
+			chunk = (int) remainFile;
+		if ((uint64_t) chunk > remainBlk)
+			chunk = (int) remainBlk;
+
+		if (LBAread (f->buf, 1, f->vol.file_start_lba + blk) != 1)
+			return (copied > 0) ? copied : -1;
+
+		memcpy (buffer + copied, f->buf + off, (size_t) chunk);
+		f->filePos += chunk;
+		copied += chunk;
+		}
+
+	return copied;
+	}
+
+static int
+b_write_volume (b_io_fd fd, const char *buffer, int count)
+	{
+	b_fcb *f = &fcbArray[fd];
+	uint64_t bs = f->vol.fs_block_size;
+	uint64_t cap = vol_capacity_bytes (f);
+	int written = 0;
+
+	if (count <= 0)
+		return 0;
 	if ((f->flags & O_ACCMODE) == O_RDONLY)
-		{
-		errno = EBADF;
 		return -1;
-		}
-
-	uint64_t blockSize = f->vol.fs_block_size;
-	uint64_t maxBytes = vol_capacity_bytes (f);
-	if (blockSize == 0 || maxBytes == 0)
-		{
-		errno = ENOSPC;
+	if (bs == 0 || f->vol.file_block_count == 0)
 		return -1;
-		}
-
 	if (f->flags & O_APPEND)
 		f->filePos = (f->vol_file_size > (uint64_t) INT_MAX)
 		                 ? INT_MAX
 		                 : (int) f->vol_file_size;
 
-	if ((uint64_t) f->filePos >= maxBytes)
+	while (written < count)
 		{
-		errno = ENOSPC;
-		return -1;
-		}
+		uint64_t filePos = (uint64_t) f->filePos;
+		uint64_t blk = filePos / bs;
+		uint64_t off = filePos % bs;
+		uint64_t remainBlk = bs - off;
+		int need = count - written;
+		int chunk = need;
 
-	int totalWritten = 0;
-	while (totalWritten < count)
-		{
-		uint64_t curPos = (uint64_t) f->filePos;
-		if (curPos >= maxBytes)
-			{
-			if (totalWritten == 0)
-				errno = ENOSPC;
+		if (filePos >= cap)
 			break;
-			}
+		if (blk >= f->vol.file_block_count)
+			break;
+		if ((uint64_t) chunk > remainBlk)
+			chunk = (int) remainBlk;
+		if (filePos + (uint64_t) chunk > cap)
+			chunk = (int) (cap - filePos);
 
-		uint64_t blockIndex = curPos / blockSize;
-		uint64_t blockOffset = curPos % blockSize;
-		uint64_t roomInBlock = blockSize - blockOffset;
-		uint64_t remainingCap = maxBytes - curPos;
-		int chunk = count - totalWritten;
+		if (LBAread (f->buf, 1, f->vol.file_start_lba + blk) != 1)
+			return (written > 0) ? written : -1;
 
-		if ((uint64_t) chunk > roomInBlock)
-			chunk = (int) roomInBlock;
-		if ((uint64_t) chunk > remainingCap)
-			chunk = (int) remainingCap;
-
-		uint64_t lba = f->vol.file_start_lba + blockIndex;
-		if (LBAread (f->buf, 1, lba) != 1)
-			{
-			errno = EIO;
-			return (totalWritten > 0) ? totalWritten : -1;
-			}
-
-		memcpy (f->buf + blockOffset, buffer + totalWritten, (size_t) chunk);
-
-		if (LBAwrite (f->buf, 1, lba) != 1)
-			{
-			errno = EIO;
-			return (totalWritten > 0) ? totalWritten : -1;
-			}
+		memcpy (f->buf + off, buffer + written, (size_t) chunk);
+		if (LBAwrite (f->buf, 1, f->vol.file_start_lba + blk) != 1)
+			return (written > 0) ? written : -1;
 
 		f->filePos += chunk;
-		totalWritten += chunk;
+		written += chunk;
+		if ((uint64_t) f->filePos > f->vol_file_size)
+			f->vol_file_size = (uint64_t) f->filePos;
 		}
-
-	if (f->vol_file_size < (uint64_t) f->filePos)
-		f->vol_file_size = (uint64_t) f->filePos;
 
 	f->fileSize = (f->vol_file_size > (uint64_t) INT_MAX)
 	                  ? INT_MAX
 	                  : (int) f->vol_file_size;
-
-	/* Keep read-buffer state consistent after volume writes. */
-	vol_reset_buf_cursor (f);
-	return totalWritten;
+	return written;
 	}
 
 void b_init ()
@@ -289,7 +298,7 @@ int b_write (b_io_fd fd, char * buffer, int count)
 		return (-1);
 
 	if (fcbArray[fd].vol_open)
-		return b_write_volume (&fcbArray[fd], buffer, count);
+		return b_write_volume (fd, buffer, count);
 
 	int bytesWritten = write (fcbArray[fd].fd, buffer, count);
 
@@ -298,175 +307,6 @@ int b_write (b_io_fd fd, char * buffer, int count)
 
 	return (bytesWritten);
 	}
-/* ---------------------------------------------------------------
- * b_read_volume
- *
- * This function handles reading from a file that lives inside OUR
- * filesystem volume (not a regular Linux file). Instead of using
- * the Linux read() system call, we use LBAread() to talk directly
- * to the disk blocks where our file's data is stored.
- *
- * Parameters:
- *   f      - pointer to the file control block (tracks position,
- *            buffer state, and which disk blocks belong to this file)
- *   buffer - the caller's buffer where we copy the data into
- *   count  - how many bytes the caller wants to read
- *
- * Returns the number of bytes actually copied, or -1 on error.
- * --------------------------------------------------------------- */
-static int
-b_read_volume (b_fcb *f, char *buffer, int count)
-    {
-    if (count <= 0)
-        return 0;
-
-    /* --- Clamp count to what's actually left in the file ---
-     * vol_file_size is the real size of the file in bytes.
-     * filePos is where we currently are in the file.
-     * If we asked for more bytes than are left, shrink count
-     * so we don't return garbage padding from the end of a block. */
-    uint64_t remaining_in_file = (f->vol_file_size > (uint64_t) f->filePos)
-                                     ? f->vol_file_size - (uint64_t) f->filePos
-                                     : 0;
-    if (remaining_in_file == 0)
-        return 0;   /* Already at end of file, nothing to read */
-    if ((uint64_t) count > remaining_in_file)
-        count = (int) remaining_in_file;
-
-    uint64_t blockSize = f->vol.fs_block_size;  /* e.g. 512 bytes per block */
-    int bytesCopied = 0;                         /* running total of bytes copied so far */
-
-    /* =============================================================
-     * PHASE 1: Check if we already have leftover bytes in our buffer
-     *
-     * Our internal buffer (f->buf) can hold one block's worth of data.
-     * f->buflen is how many bytes are valid in the buffer.
-     * f->index is how far into the buffer we've already consumed.
-     * So (buflen - index) = how many buffered bytes haven't been
-     * handed to the caller yet.
-     *
-     * Example: last read buffered 512 bytes but the caller only
-     * wanted 300, so 212 bytes are still sitting in f->buf waiting.
-     * We serve those first before touching the disk again.
-     * ============================================================= */
-    int available = f->buflen - f->index;
-    if (available > 0)
-        {
-        /* Don't copy more than the caller asked for */
-        int toCopy = (count < available) ? count : available;
-        memcpy (buffer, f->buf + f->index, toCopy);
-
-        f->index    += toCopy;   /* advance our position inside the buffer */
-        f->filePos  += toCopy;   /* advance our position inside the file */
-        bytesCopied += toCopy;
-        }
-
-    int remaining = count - bytesCopied;  /* how many bytes we still owe the caller */
-
-    /* =============================================================
-     * PHASE 2: Read full blocks straight into the caller's buffer
-     *
-     * If the caller still wants at least one full block's worth of
-     * data, we skip our internal buffer entirely and have LBAread()
-     * write directly into the caller's buffer. This is the fast path
-     * because it avoids an extra memcpy.
-     *
-     * We calculate which disk block to start at using:
-     *   blockIndex = filePos / blockSize  (which block number within the file)
-     *   lba = file_start_lba + blockIndex (actual disk address)
-     * ============================================================= */
-    if (remaining >= (int) blockSize)
-        {
-        /* How many complete blocks fit in 'remaining' bytes? */
-        int blocks    = remaining / (int) blockSize;
-        int wantBytes = blocks * (int) blockSize;
-
-        /* Safety check: don't read past the end of the allocated disk space.
-         * vol_capacity_bytes() returns file_block_count * block_size. */
-        uint64_t cap = vol_capacity_bytes (f);
-        if ((uint64_t) f->filePos + (uint64_t) wantBytes > cap)
-            {
-            uint64_t room = cap - (uint64_t) f->filePos;
-            blocks    = (int) (room / blockSize);   /* fewer blocks fit */
-            wantBytes = blocks * (int) blockSize;
-            }
-
-        if (blocks > 0)
-            {
-            /* Convert our file-relative block number to an absolute LBA */
-            uint64_t blockIndex = (uint64_t) f->filePos / blockSize;
-            uint64_t lba        = f->vol.file_start_lba + blockIndex;
-
-            /* Read directly into the caller's buffer at the right offset */
-            if (LBAread (buffer + bytesCopied, (uint64_t) blocks, lba)
-                != (uint64_t) blocks)
-                {
-                errno = EIO;
-                return (bytesCopied > 0) ? bytesCopied : -1;
-                }
-
-            f->filePos  += wantBytes;
-            bytesCopied += wantBytes;
-            }
-        }
-
-    remaining = count - bytesCopied;
-
-    /* =============================================================
-     * PHASE 3: Handle the leftover partial block at the end
-     *
-     * If the caller still wants bytes but less than a full block,
-     * we have to read an entire block from disk into our internal
-     * buffer (because LBAread always reads in whole blocks), then
-     * copy just the bytes the caller needs out of it.
-     *
-     * The key insight: we keep the rest of the buffered block in
-     * f->buf so that the NEXT call to b_read can use Phase 1
-     * instead of hitting the disk again. This is what makes
-     * reading byte-by-byte not ridiculously slow.
-     * ============================================================= */
-    if (remaining > 0)
-        {
-        /* Figure out which block filePos is currently inside,
-         * and how far into that block we are */
-        uint64_t blockIndex    = (uint64_t) f->filePos / blockSize;
-        uint64_t offsetInBlock = (uint64_t) f->filePos % blockSize;
-        uint64_t lba           = f->vol.file_start_lba + blockIndex;
-
-        /* Read the whole block into our internal buffer */
-        if (LBAread (f->buf, 1, lba) != 1)
-            {
-            errno = EIO;
-            return (bytesCopied > 0) ? bytesCopied : -1;
-            }
-
-        /* How many bytes in this block are still part of our file?
-         * (The rest are just block padding and don't belong to the file) */
-        int bytesAvailInBlock = (int) blockSize - (int) offsetInBlock;
-        if ((uint64_t) f->filePos + (uint64_t) bytesAvailInBlock
-            > f->vol_file_size)
-            bytesAvailInBlock
-                = (int) (f->vol_file_size - (uint64_t) f->filePos);
-
-        /* Update buffer metadata so Phase 1 works correctly next call:
-         *   buflen = full block size (all bytes are now valid in f->buf)
-         *   index  = where we are inside the buffer right now */
-        f->buflen = (int) blockSize;
-        f->index  = (int) offsetInBlock;
-
-        int toCopy = (remaining < bytesAvailInBlock)
-                         ? remaining
-                         : bytesAvailInBlock;
-        memcpy (buffer + bytesCopied, f->buf + offsetInBlock, toCopy);
-
-        /* Advance both the buffer cursor and the file position */
-        f->index    += toCopy;
-        f->filePos  += toCopy;
-        bytesCopied += toCopy;
-        }
-
-    return bytesCopied;
-    }
 
 int b_read (b_io_fd fd, char * buffer, int count)
 	{
@@ -480,7 +320,7 @@ int b_read (b_io_fd fd, char * buffer, int count)
  	* vol_open = 1. In that case fd == -1, so calling read(fd, ...)
  	* would fail — we must use LBAread through b_read_volume instead. */
 	if (fcbArray[fd].vol_open)
-    	return b_read_volume (&fcbArray[fd], buffer, count);
+		return b_read_volume (fd, buffer, count);
 
 	int bytesCopied = 0;
 

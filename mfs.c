@@ -1260,6 +1260,21 @@ mfs_volume_open (char *filename, int flags, mfs_b_open_ctx *ctx)
 			errno = EINVAL;
 			return -1;
 			}
+		if ((flags & O_TRUNC) && ((flags & O_ACCMODE) != O_RDONLY))
+			{
+			ppi.parent[ppi.index].size = 0;
+			ppi.parent[ppi.index].modifiedTime = time (NULL);
+			if (LBAwrite (ppi.parent,
+			              ppi.parent[0].blockCount,
+			              ppi.parent[0].startBlock)
+			    != ppi.parent[0].blockCount)
+				{
+				free (ppi.parent);
+				free (ppi.lastElementName);
+				errno = EIO;
+				return -1;
+				}
+			}
 		ctx->parent_dir = ppi.parent;
 		ctx->parent_start_lba = ppi.parent[0].startBlock;
 		ctx->parent_block_count = (uint32_t) ppi.parent[0].blockCount;
