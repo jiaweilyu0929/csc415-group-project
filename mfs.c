@@ -1018,6 +1018,7 @@ int
 fs_setcwd (char *pathname)
 	{
 	char canon[FS_CWD_MAX];
+	int t;
 
 	if (pathname == NULL)
 		{
@@ -1032,41 +1033,12 @@ fs_setcwd (char *pathname)
 		return -1;
 		}
 
-	/* FIX: Use ParsePath instead of fs_vol_last_component_type.
-	 * fs_vol_last_component_type only searches the original root directory
-	 * loaded at format time and cannot find directories created afterward.
-	 * ParsePath walks the live on-disk directory tree and finds any
-	 * directory regardless of when it was created. */
-	parsepath_info ppi;
-	if (ParsePath (canon, &ppi) != 0)
-		{
-		errno = ENOENT;
+	t = fs_vol_last_component_type (canon);
+	if (t != (int) FS_FTYPE_DIR) {
+
+		errno = (t == (int) FS_FTYPE_REG) ? ENOTDIR : ENOENT;
 		return -1;
-		}
-
-	/* Make sure the target is actually a directory, not a file.
-	 * index == -2 means the path was "/" which is always a directory.
-	 * index >= 0 means we found the entry -- check its fileType. */
-	if (ppi.index != -2)
-		{
-		if (ppi.index < 0)
-			{
-			free (ppi.parent);
-			free (ppi.lastElementName);
-			errno = ENOENT;
-			return -1;
-			}
-		if (ppi.parent[ppi.index].fileType != FS_FTYPE_DIR)
-			{
-			free (ppi.parent);
-			free (ppi.lastElementName);
-			errno = ENOTDIR;
-			return -1;
-			}
-		}
-
-	free (ppi.parent);
-	free (ppi.lastElementName);
+	}
 
 	/* Replace the stored working directory with the cleaned path. */
 	memcpy (g_fs_cwd, canon, strlen (canon) + 1);
@@ -1083,20 +1055,27 @@ fs_setcwd (char *pathname)
 int
 fs_isFile (char *filename)
 	{
-	char abs[FS_CWD_MAX];
-	int t;
-
 	if (filename == NULL)
 		return 0;
 
-	/* Turn the path into a clean absolute path first. */
-	if (resolve_lookup_path (abs, sizeof abs, filename) != 0)
+	/* FIX: Use ParsePath instead of fs_vol_last_component_type so we
+	 * can find files created after the volume was formatted. */
+	parsepath_info ppi;
+	if (ParsePath (filename, &ppi) != 0)
 		return 0;
 
-	/* Ask fsInit.c to look up the last component and return its type.
-	 * FS_FTYPE_REG (1) means it is a regular file. */
-	t = fs_vol_last_component_type (abs);
-	return (t == 1) ? 1 : 0;
+	/* index < 0 means not found; index == -2 means root (a directory). */
+	if (ppi.index < 0)
+		{
+		free (ppi.parent);
+		free (ppi.lastElementName);
+		return 0;
+		}
+
+	int result = (ppi.parent[ppi.index].fileType == FS_FTYPE_REG) ? 1 : 0;
+	free (ppi.parent);
+	free (ppi.lastElementName);
+	return result;
 	}
 
 
@@ -1109,19 +1088,33 @@ fs_isFile (char *filename)
 int
 fs_isDir (char *pathname)
 	{
-	char abs[FS_CWD_MAX];
-	int t;
-
 	if (pathname == NULL)
 		return 0;
 
-	/* Turn the path into a clean absolute path first. */
-	if (resolve_lookup_path (abs, sizeof abs, pathname) != 0)
+	/* FIX: Use ParsePath instead of fs_vol_last_component_type so we
+	 * can find directories created after the volume was formatted. */
+	parsepath_info ppi;
+	if (ParsePath (pathname, &ppi) != 0)
 		return 0;
 
-	/* FS_FTYPE_DIR (2) means it is a directory. */
-	t = fs_vol_last_component_type (abs);
-	return (t == 2) ? 1 : 0;
+	/* index == -2 means the path is "/" which is always a directory. */
+	if (ppi.index == -2)
+		{
+		free (ppi.parent);
+		return 1;
+		}
+
+	if (ppi.index < 0)
+		{
+		free (ppi.parent);
+		free (ppi.lastElementName);
+		return 0;
+		}
+
+	int result = (ppi.parent[ppi.index].fileType == FS_FTYPE_DIR) ? 1 : 0;
+	free (ppi.parent);
+	free (ppi.lastElementName);
+	return result;
 	}
 
 
