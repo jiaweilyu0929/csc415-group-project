@@ -72,6 +72,7 @@ b_read_volume (b_io_fd fd, char *buffer, int count)
 	if (bs == 0 || f->vol.file_block_count == 0 || count <= 0)
 		return 0;
 
+	/* Read by logical block and stop at real file size. */
 	while (copied < count && (uint64_t) f->filePos < f->vol_file_size)
 		{
 		uint64_t filePos = (uint64_t) f->filePos;
@@ -89,6 +90,7 @@ b_read_volume (b_io_fd fd, char *buffer, int count)
 		if ((uint64_t) chunk > remainBlk)
 			chunk = (int) remainBlk;
 
+		/* We read one block first, then copy only needed bytes. */
 		if (LBAread (f->buf, 1, f->vol.file_start_lba + blk) != 1)
 			return (copied > 0) ? copied : -1;
 
@@ -119,6 +121,7 @@ b_write_volume (b_io_fd fd, const char *buffer, int count)
 		                 ? INT_MAX
 		                 : (int) f->vol_file_size;
 
+	/* Simple read-modify-write per block for partial writes. */
 	while (written < count)
 		{
 		uint64_t filePos = (uint64_t) f->filePos;
@@ -190,6 +193,7 @@ b_io_fd b_open (char * filename, int flags)
 	mfs_b_open_ctx ctx;
 	memset (&ctx, 0, sizeof (ctx));
 
+	/* Try volume path first; fallback to Linux file if not found there. */
 	if (mfs_volume_open (filename, flags, &ctx) == 0)
 		{
 		size_t bsz = (ctx.fs_block_size > 0) ? (size_t) ctx.fs_block_size
@@ -274,6 +278,7 @@ int b_seek (b_io_fd fd, off_t offset, int whence)
 
 	if (fcbArray[fd].vol_open)
 		{
+		/* For volume files, keep seek inside allocated capacity. */
 		uint64_t cap = vol_capacity_bytes (&fcbArray[fd]);
 		if ((uint64_t) pos > cap)
 			pos = (long long) cap;
@@ -379,6 +384,7 @@ int b_close (b_io_fd fd)
 
 	if (fcbArray[fd].vol_open)
 		{
+		/* Push final size back to directory entry and free parent_dir. */
 		mfs_volume_close (&fcbArray[fd].vol, fcbArray[fd].vol_file_size);
 		fcbArray[fd].vol_open = 0;
 		memset (&fcbArray[fd].vol, 0, sizeof (fcbArray[fd].vol));
