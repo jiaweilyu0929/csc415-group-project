@@ -1018,6 +1018,7 @@ int
 fs_setcwd (char *pathname)
 	{
 	char canon[FS_CWD_MAX];
+	int t;
 
 	if (pathname == NULL)
 		{
@@ -1031,6 +1032,13 @@ fs_setcwd (char *pathname)
 		errno = ENAMETOOLONG;
 		return -1;
 		}
+
+	t = fs_vol_last_component_type (canon);
+	if (t != (int) FS_FTYPE_DIR) {
+
+		errno = (t == (int) FS_FTYPE_REG) ? ENOTDIR : ENOENT;
+		return -1;
+	}
 
 	/* Replace the stored working directory with the cleaned path. */
 	memcpy (g_fs_cwd, canon, strlen (canon) + 1);
