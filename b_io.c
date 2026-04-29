@@ -1,7 +1,7 @@
 /**************************************************************
 * Class::  CSC-415-3# Fall 2025
-* Name:: Leslie Raya
-* Student IDs::921813630
+* Name:: Jiawei Lyu, Leslie Raya, Alexandra Borders, Yeraldin Crespo
+* Student IDs:: 923809065, 921813630, 913630008, 923523819
 * GitHub-Name::jiaweilyu0929
 * Group-Name:: Team #1
 * Project:: Basic File System
