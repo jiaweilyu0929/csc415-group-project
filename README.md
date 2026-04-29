@@ -28,18 +28,18 @@ This is a GROUP assignment written in C.  Only one person on the team needs to s
 
 Each .c and .h file must have a standard header as defined below.  Make sure to put in your section number (replace the #), your name, your student IDs, a proper project name, GitHub name, Group name, filename, and description of the project.  Do not alter the number of asterisks and ensure that the header starts on line 1 of the file.
 
-```**************************************************************
-* Class::  CSC-415-03 Spring 2026
+```
+/**************************************************************
+* Class::  CSC-415-0# Fall 2025
 * Name:: Jiawei Lyu, Leslie Raya, Alexandra Borders, Yeraldin Crespo
 * Student IDs:: 923809065, 921813630, 913630008, 923523819
-* GitHub-Name::jiaweilyu0929
+* GitHub-Name:: jiaweilyu0929
 * Group-Name:: Team #1
 * Project:: Basic File System
 *
-* File:: mfs.h
-*
-* Description:: 
-*    This implementation builds a working file system on top of a simulated 
+* Description
+
+This implementation builds a working file system on top of a simulated 
 volume using 512-byte blocks. The system initializes and mounts a 
 volume file (SampleVolume), writes the VCB to block 0, and uses a 
 bitmap to manage free space across the disk.
@@ -59,7 +59,10 @@ LBAread and LBAwrite for all disk access, ensuring data persistence.
 
 The file system is tested through the provided fsshell driver, where 
 directory creation, navigation, and basic file operations can be executed.
+*
+* 
 **************************************************************/
+
 ```
 
 
