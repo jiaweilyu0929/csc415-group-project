@@ -29,10 +29,10 @@ This is a GROUP assignment written in C.  Only one person on the team needs to s
 Each .c and .h file must have a standard header as defined below.  Make sure to put in your section number (replace the #), your name, your student IDs, a proper project name, GitHub name, Group name, filename, and description of the project.  Do not alter the number of asterisks and ensure that the header starts on line 1 of the file.
 
 ```**************************************************************
-* Class::  CSC-415-0# Spring 2024
+* Class::  CSC-415-03 Spring 2026
 * Name:: Jiawei Lyu, Leslie Raya, Alexandra Borders, Yeraldin Crespo
 * Student IDs:: 923809065, 921813630, 913630008, 923523819
-* GitHub-Name::
+* GitHub-Name::jiaweilyu0929
 * Group-Name:: Team #1
 * Project:: Basic File System
 *
