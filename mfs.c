@@ -31,7 +31,7 @@
 
 /* How many 512-byte blocks every directory occupies on disk.
  * Keeping this fixed makes allocation and sizing simple. */
-#define FS_ROOT_DIR_BLOCKS  4
+#define FS_ROOT_DIR_BLOCKS  8
 
 /* Maximum number of characters allowed in a file or directory name
  * (not counting the null terminator). */
