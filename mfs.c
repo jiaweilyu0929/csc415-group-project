@@ -31,6 +31,10 @@
 
 /* How many 512-byte blocks every directory occupies on disk.
  * Keeping this fixed makes allocation and sizing simple. */
+/* FIX: Changed from 4 to 8 to match fsInit.c.
+ * fs_dirent_t is 312 bytes; at 512 bytes/block, 4 blocks = only 6 entries
+ * total (including . and ..), leaving just 4 usable slots per directory.
+ * 8 blocks = 4096 bytes = 13 entries, giving 11 usable slots. */
 #define FS_ROOT_DIR_BLOCKS  8
 
 /* Maximum number of characters allowed in a file or directory name
