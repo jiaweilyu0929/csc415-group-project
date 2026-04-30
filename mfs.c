@@ -1200,7 +1200,151 @@ fs_delete (char *filename)
 	return 0;
 	}
 
+/* ---------------------------------------------------------------
+ * fs_rename
+ *
+ * Moves or renames src to dst. dst can be:
+ *   - a new name in the same directory  (rename)
+ *   - a path in a different directory   (move)
+ *
+ * The strategy is: find the source dirent, copy it into a free
+ * slot in the destination parent, update the name, then zero out
+ * the original source slot. Both parent directories are written
+ * back to disk so the change persists across mounts.
+ *
+ * Returns 0 on success, -1 on error (errno set).
+ * --------------------------------------------------------------- */
+int
+fs_rename (const char *src, const char *dst)
+	{
+	if (src == NULL || dst == NULL)
+		{
+		errno = EINVAL;
+		return -1;
+		}
 
+	parsepath_info src_ppi;
+	parsepath_info dst_ppi;
+
+	/* ParsePath walks the on-disk directory tree and loads the
+	 * parent directory of the last path component into memory.
+	 * For the source, index >= 0 means the entry actually exists
+	 * on disk — if it doesn't, there's nothing to move. */
+	if (ParsePath (src, &src_ppi) != 0 || src_ppi.index < 0)
+		{
+		if (src_ppi.parent)          free (src_ppi.parent);
+		if (src_ppi.lastElementName) free (src_ppi.lastElementName);
+		errno = ENOENT;
+		return -1;
+		}
+
+	/* For the destination, we need the parent directory to exist
+	 * (so ParsePath succeeds) but the final name must NOT exist yet
+	 * (index < 0). We refuse to silently overwrite an existing entry. */
+	if (ParsePath (dst, &dst_ppi) != 0)
+		{
+		free (src_ppi.parent);
+		free (src_ppi.lastElementName);
+		errno = ENOENT;
+		return -1;
+		}
+
+	if (dst_ppi.index >= 0)
+		{
+		/* Destination name already exists — bail out rather than
+		 * clobber a file the user may not have intended to overwrite. */
+		free (src_ppi.parent);
+		free (src_ppi.lastElementName);
+		free (dst_ppi.parent);
+		free (dst_ppi.lastElementName);
+		errno = EEXIST;
+		return -1;
+		}
+
+	/* Scan the destination parent for an unused dirent slot.
+	 * Slots 0 and 1 are always "." and ".." so we start at 2.
+	 * inUse == 0 means the slot was never written or has been deleted. */
+	int dst_slot = -1;
+	int dst_entries = (int)(dst_ppi.parent[0].blockCount
+	                        * g_fs_sb.block_size / sizeof (fs_dirent_t));
+	for (int i = 2; i < dst_entries; i++)
+		{
+		if (dst_ppi.parent[i].inUse == 0)
+			{
+			dst_slot = i;
+			break;
+			}
+		}
+
+	if (dst_slot < 0)
+		{
+		/* No free slot found — the destination directory is full. */
+		free (src_ppi.parent);
+		free (src_ppi.lastElementName);
+		free (dst_ppi.parent);
+		free (dst_ppi.lastElementName);
+		errno = ENOSPC;
+		return -1;
+		}
+
+	/* Copy the entire source dirent (size, timestamps, start block, etc.)
+	 * into the destination slot so no metadata is lost during the move.
+	 * Then overwrite just the name field with the destination filename. */
+	dst_ppi.parent[dst_slot] = src_ppi.parent[src_ppi.index];
+	strncpy (dst_ppi.parent[dst_slot].name,
+	         dst_ppi.lastElementName,
+	         FS_FILENAME_MAX - 1);
+	dst_ppi.parent[dst_slot].name[FS_FILENAME_MAX - 1] = '\0';
+
+	/* Persist the destination parent to disk so the new entry survives
+	 * a remount. We write the full block range that the directory occupies. */
+	if (LBAwrite (dst_ppi.parent,
+	              dst_ppi.parent[0].blockCount,
+	              dst_ppi.parent[0].startBlock)
+	    != dst_ppi.parent[0].blockCount)
+		{
+		free (src_ppi.parent);
+		free (src_ppi.lastElementName);
+		free (dst_ppi.parent);
+		free (dst_ppi.lastElementName);
+		errno = EIO;
+		return -1;
+		}
+
+	/* Zero out the original source slot so the old name no longer appears
+	 * in directory listings. memset to 0 is enough because inUse == 0
+	 * is what marks a slot as free throughout the rest of the filesystem. */
+	memset (&src_ppi.parent[src_ppi.index], 0, sizeof (fs_dirent_t));
+
+	/* If source and destination are in the same directory, both changes
+	 * (the new slot and the zeroed old slot) live in the same in-memory
+	 * buffer (dst_ppi.parent), which was already written above — so we
+	 * only need a second LBAwrite when the parents are different blocks. */
+	if (src_ppi.parent[0].startBlock != dst_ppi.parent[0].startBlock)
+		{
+		if (LBAwrite (src_ppi.parent,
+		              src_ppi.parent[0].blockCount,
+		              src_ppi.parent[0].startBlock)
+		    != src_ppi.parent[0].blockCount)
+			{
+			free (src_ppi.parent);
+			free (src_ppi.lastElementName);
+			free (dst_ppi.parent);
+			free (dst_ppi.lastElementName);
+			errno = EIO;
+			return -1;
+			}
+		}
+
+	/* Release the heap memory that ParsePath allocated for both
+	 * parent directory buffers and the last-component name strings. */
+	free (src_ppi.parent);
+	free (src_ppi.lastElementName);
+	free (dst_ppi.parent);
+	free (dst_ppi.lastElementName);
+	return 0;
+	}
+	
 /* ---------------------------------------------------------------
  * fs_stat
  *
