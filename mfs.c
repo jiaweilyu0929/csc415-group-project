@@ -1141,8 +1141,8 @@ fs_rename (const char *src, const char *dst)
 	dst_ppi.parent[dst_slot] = src_ppi.parent[src_ppi.index];
 	strncpy (dst_ppi.parent[dst_slot].name,
 	         dst_ppi.lastElementName,
-	         FS_FILENAME_MAX - 1);
-	dst_ppi.parent[dst_slot].name[FS_FILENAME_MAX - 1] = '\0';
+	         MAX_FILENAME - 1);
+	dst_ppi.parent[dst_slot].name[MAX_FILENAME - 1] = '\0';
 
 	/* Persist the destination parent to disk so the new entry survives
 	 * a remount. We write the full block range that the directory occupies. */
