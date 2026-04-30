@@ -25,11 +25,8 @@
 
 #define FS_MAGIC                0x46534331u  /* 'FSC1' */
 #define FS_VERSION              1u
-/* FIX: Increased from 4 to 8 blocks.
- * fs_dirent_t is 312 bytes; at 512 bytes/block, 4 blocks = 2048 bytes = only 6
- * entries total (including . and ..), leaving just 4 usable slots per directory.
- * 8 blocks = 4096 bytes = 13 entries, giving 11 usable slots — much more practical.
- * NOTE: delete SampleVolume and reformat whenever this value changes. */
+/* increased from 4 to 8 -- 4 blocks only gave us 4 usable directory slots
+ * which filled up immediately during testing */
 #define FS_ROOT_DIR_BLOCKS      8
 #define MAX_FILENAME            255
 #define DIR_ENTRIES             50
@@ -143,29 +140,24 @@ fs_vol_try_mount (uint64_t numberOfBlocks, uint64_t blockSize)
         if (sb.block_size != blockSize || sb.total_blocks != numberOfBlocks)
                 return -1;
 
-        /* Save the on-disk superblock into our global so every other function
-         * can read volume geometry (block size, total blocks, LBA offsets) without
-         * re-reading block 0 every time. */
+        /* save superblock globally so other functions can read volume layout */
         memcpy (&g_fs_sb, &sb, sizeof (fs_superblock_t));
 
-        /* FIX: Reload the bitmap from disk into memory on every mount.
-         * Previously g_bitmap stayed NULL after a clean mount, so the very
-         * first call to allocateBlocks() would fail with "bitmap not initialized".
-         * Now we read the bitmap blocks back into a freshly allocated buffer so
-         * allocateBlocks() and freeBlocks() work correctly without a reformat. */
-        g_bitmap_blocks = sb.bitmap_block_count;  /* how many blocks the bitmap spans */
-        g_bitmap = malloc ((size_t) (g_bitmap_blocks * blockSize)); /* one byte per 8 blocks */
-        if (g_bitmap == NULL)           /* allocation failed — cannot continue */
+        /* reload bitmap from disk -- without this allocateBlocks fails on a
+         * clean mount because g_bitmap would still be NULL */
+        g_bitmap_blocks = sb.bitmap_block_count;
+        g_bitmap = malloc ((size_t) (g_bitmap_blocks * blockSize));
+        if (g_bitmap == NULL)
                 return -1;
         if (LBAread (g_bitmap, g_bitmap_blocks, sb.bitmap_start_lba)
-            != g_bitmap_blocks)         /* short read means disk error */
+            != g_bitmap_blocks)
                 {
-                free (g_bitmap);        /* avoid leak before returning */
-                g_bitmap = NULL;        /* reset so callers see uninitialized state */
+                free (g_bitmap);
+                g_bitmap = NULL;
                 return -1;
                 }
 
-        g_fs_mounted = 1;   /* volume is ready; allow all FS operations */
+        g_fs_mounted = 1;
         return 0;
         }
 

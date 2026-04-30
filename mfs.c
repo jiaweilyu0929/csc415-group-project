@@ -29,12 +29,7 @@
 /* Maximum length of any absolute path string we store in memory. */
 #define FS_CWD_MAX 4096
 
-/* How many 512-byte blocks every directory occupies on disk.
- * Keeping this fixed makes allocation and sizing simple. */
-/* FIX: Changed from 4 to 8 to match fsInit.c.
- * fs_dirent_t is 312 bytes; at 512 bytes/block, 4 blocks = only 6 entries
- * total (including . and ..), leaving just 4 usable slots per directory.
- * 8 blocks = 4096 bytes = 13 entries, giving 11 usable slots. */
+/* increased from 4 to 8 to match fsInit.c -- 4 blocks wasn't enough slots */
 #define FS_ROOT_DIR_BLOCKS  8
 
 /* Maximum number of characters allowed in a file or directory name
@@ -124,25 +119,11 @@ extern int fs_vol_last_component_type (const char *abs_path);
 extern int allocateBlocks (uint64_t count);
 
 
-/* ---------------------------------------------------------------
- * path_canonicalize
- *
- * Turns any path (relative or absolute, possibly messy) into a
- * clean absolute path string with no ".", "..", or double slashes.
- *
- * Examples:
- *   cwd="/home",  inpath="docs/../pics"  -> "/home/pics"
- *   cwd="/",      inpath="/foo//bar"     -> "/foo/bar"
- *   cwd="/a/b/c", inpath="../.."        -> "/a"
- *
- * Parameters:
- *   out    - buffer where the result is written
- *   outlen - size of that buffer (must be at least 2)
- *   cwd    - the current working directory (used for relative paths)
- *   inpath - the path the user typed
- *
- * Returns 0 on success, -1 if the path is invalid or too long.
- * --------------------------------------------------------------- */
+/* path_canonicalize
+ * Takes any path (relative or absolute) and turns it into a clean
+ * absolute path with no ".", "..", or double slashes.
+ * Uses the cwd as the base when the path is relative.
+ * Returns 0 on success, -1 if invalid or too long. */
 static int
 path_canonicalize (char *out, size_t outlen, const char *cwd,
                    const char *inpath)
@@ -219,14 +200,8 @@ path_canonicalize (char *out, size_t outlen, const char *cwd,
 	}
 
 
-/* ---------------------------------------------------------------
- * resolve_lookup_path
- *
- * Thin wrapper around path_canonicalize that always uses the
- * current working directory (g_fs_cwd) as the base.
- * Called by any function that needs to turn a user-supplied path
- * into a reliable absolute path before doing disk lookups.
- * --------------------------------------------------------------- */
+/* wrapper around path_canonicalize that always uses the current
+ * working directory as the base -- used before any disk lookup */
 static int
 resolve_lookup_path (char *out, size_t outlen, const char *path)
 	{
@@ -236,24 +211,8 @@ resolve_lookup_path (char *out, size_t outlen, const char *path)
 	}
 
 
-/* ---------------------------------------------------------------
- * LoadDir
- *
- * Reads an entire directory from disk into a freshly malloc'd buffer
- * and returns a pointer to that buffer.
- *
- * We look at the entry's startBlock (where on disk it begins) and
- * blockCount (how many consecutive blocks it occupies) to know
- * exactly what to read with LBAread.
- *
- * The returned pointer is an array of fs_dirent_t structs -- one
- * slot per possible entry in that directory.
- *
- * IMPORTANT: The caller is responsible for calling free() on the
- * returned pointer when it no longer needs the data.
- *
- * Returns NULL if memory allocation or the disk read fails.
- * --------------------------------------------------------------- */
+/* reads a directory from disk into a malloc'd buffer and returns it.
+ * caller must free() the result when done. returns NULL on error. */
 static fs_dirent_t *
 LoadDir (fs_dirent_t *entry)
 	{
@@ -280,20 +239,8 @@ LoadDir (fs_dirent_t *entry)
 	}
 
 
-/* ---------------------------------------------------------------
- * FindEntryInDir
- *
- * Searches a loaded directory (an array of fs_dirent_t structs)
- * for an entry whose name matches the given string.
- *
- * We figure out how many slots the directory has by dividing its
- * total byte size (stored in dir[0].size) by the size of one entry.
- * We only look at slots where inUse == 1 because empty slots may
- * contain garbage from a previous deletion.
- *
- * Returns the index (slot number) of the matching entry,
- * or -1 if no entry with that name exists.
- * --------------------------------------------------------------- */
+/* searches a loaded directory for a name match.
+ * returns the slot index if found, -1 if not. */
 static int
 FindEntryInDir (fs_dirent_t *dir, const char *name)
 	{
@@ -313,26 +260,11 @@ FindEntryInDir (fs_dirent_t *dir, const char *name)
 	}
 
 
-/* ---------------------------------------------------------------
- * ParsePath
- *
- * The central path-walking function used by mkdir, opendir, and
- * others. It breaks a path like "/home/student/docs" into steps
- * and walks the directory tree on disk one level at a time.
- *
- * When it finishes, ppi is filled in with:
- *   ppi.parent          -- the directory that CONTAINS the last name,
- *                          loaded into memory (caller must free it)
- *   ppi.index           -- slot of the last name inside parent
- *                          (-1 = not found, ok for mkdir)
- *                          (-2 = path was "/" so parent IS the target)
- *   ppi.lastElementName -- malloc'd copy of the final name component
- *                          e.g. "docs" for "/home/student/docs"
- *                          NULL if the path was "/"
- *
- * Returns 0 on success, -1 if any middle component is missing or
- * is not a directory (i.e. the path is invalid).
- * --------------------------------------------------------------- */
+/* ParsePath walks the directory tree one component at a time and fills
+ * in ppi with the parent directory and the index of the last name.
+ * index == -1 means the name wasn't found (ok for mkdir/create).
+ * index == -2 means the path was "/" so parent itself is the target.
+ * Returns 0 on success, -1 if a middle component is missing or not a dir. */
 static int
 ParsePath (const char *path, parsepath_info *ppi)
 	{
@@ -719,30 +651,10 @@ fs_rmdir (const char *pathname)
 	}
 
 
-/* ---------------------------------------------------------------
- * fs_opendir
- *
- * Opens a directory so the caller can iterate through its entries
- * using fs_readdir. Think of it like fopen but for directories.
- *
- * Internally we:
- *   1. Walk the path with ParsePath to find the directory on disk.
- *   2. Load all the directory's entries from disk into memory.
- *   3. Allocate an fdDir "cursor" struct that tracks where we are
- *      in the iteration (current_index starts at 0).
- *
- * Memory layout of dirp->di:
- *   We need to store BOTH the fs_diriteminfo (returned by readdir)
- *   AND a pointer to the entries array. We do this by allocating
- *   a single block of memory that holds both back to back:
- *     [ struct fs_diriteminfo | fs_dirent_t* entries_pointer ]
- *   The entries_pointer sits immediately after the struct in memory.
- *   d_reclen is repurposed to store the total entry count since we
- *   don't need its original meaning here.
- *
- * Returns a pointer to an fdDir on success, NULL on failure (errno set).
- * The caller must call fs_closedir when done to free all memory.
- * --------------------------------------------------------------- */
+/* fs_opendir
+ * Opens a directory for iteration. Loads all entries from disk into
+ * memory and returns an fdDir handle the caller uses with fs_readdir.
+ * Returns NULL on error (errno set). Caller must call fs_closedir when done. */
 fdDir *
 fs_opendir (const char *pathname)
 	{
@@ -843,13 +755,9 @@ fs_opendir (const char *pathname)
 	dirp->dir_block_count = (uint32_t) target->blockCount;
 	dirp->current_index   = 0;   /* Start iteration from the first slot */
 
-	/* Allocate a combined block for the readdir result struct AND the
-	 * pointer to our entries array. Layout in memory:
-	 *   [ struct fs_diriteminfo (returned to caller by readdir)   ]
-	 *   [ fs_dirent_t* (hidden pointer to the full entries array) ]
-	 *
-	 * Storing both in one allocation avoids a second malloc and
-	 * makes cleanup in fs_closedir straightforward. */
+	/* allocate a single block that holds both the fs_diriteminfo struct
+	 * and a pointer to the entries array right after it. this way
+	 * closedir only needs one free call for both. */
 	dirp->di = malloc (sizeof (struct fs_diriteminfo) + sizeof (fs_dirent_t *));
 	if (dirp->di == NULL)
 		{
@@ -878,22 +786,10 @@ fs_opendir (const char *pathname)
 	}
 
 
-/* ---------------------------------------------------------------
- * fs_readdir
- *
- * Returns information about the next entry in a directory that was
- * opened with fs_opendir. Call it repeatedly in a loop until it
- * returns NULL, which signals that every entry has been returned.
- *
- * Skips slots where inUse == 0 (empty or deleted entries) so the
- * caller only ever sees real, live directory entries.
- *
- * The returned pointer always points to the same struct (dirp->di)
- * and is overwritten on every call. If you need to keep the data
- * from one call while making the next, copy the fields you need.
- *
- * Returns NULL when there are no more entries to return.
- * --------------------------------------------------------------- */
+/* fs_readdir
+ * Returns the next valid entry in the directory, skipping empty slots.
+ * Returns NULL when there are no more entries.
+ * The returned pointer is reused each call so copy the fields if needed. */
 struct fs_diriteminfo *
 fs_readdir (fdDir *dirp)
 	{
@@ -934,20 +830,7 @@ fs_readdir (fdDir *dirp)
 	}
 
 
-/* ---------------------------------------------------------------
- * fs_closedir
- *
- * Releases all memory that was allocated by fs_opendir.
- * Must always be called when you are done with a directory to
- * avoid memory leaks. Think of it like fclose for directories.
- *
- * Frees in order:
- *   1. The entries array that was loaded from disk.
- *   2. The di allocation (which also contains the entries pointer).
- *   3. The fdDir struct itself.
- *
- * Returns 0 on success, -1 if dirp is NULL.
- * --------------------------------------------------------------- */
+/* fs_closedir -- frees all memory allocated by fs_opendir */
 int
 fs_closedir (fdDir *dirp)
 	{
@@ -970,16 +853,8 @@ fs_closedir (fdDir *dirp)
 	}
 
 
-/* ---------------------------------------------------------------
- * fs_getcwd
- *
- * Copies the current working directory path into pathbuffer.
- * Works like the standard POSIX getcwd -- the caller provides the
- * buffer and its size; we fill it in.
- *
- * Returns pathbuffer on success, NULL if the buffer is too small
- * (errno = ERANGE) or the arguments are invalid (errno = EINVAL).
- * --------------------------------------------------------------- */
+/* fs_getcwd -- copies the current working directory into pathbuffer.
+ * returns pathbuffer on success, NULL if the buffer is too small. */
 char *
 fs_getcwd (char *pathbuffer, size_t size)
 	{
@@ -1005,19 +880,8 @@ fs_getcwd (char *pathbuffer, size_t size)
 	}
 
 
-/* ---------------------------------------------------------------
- * fs_setcwd
- *
- * Changes the current working directory to pathname.
- * Works like the standard POSIX chdir. The path is cleaned and
- * normalized before being stored so relative paths like "../foo"
- * resolve correctly from wherever we currently are.
- *
- * Note: this updates the in-memory path only. A fuller
- * implementation would also verify the path exists on disk first.
- *
- * Returns 0 on success, -1 on error (errno set).
- * --------------------------------------------------------------- */
+/* fs_setcwd -- changes the working directory to pathname.
+ * cleans up the path first so relative paths like ../foo resolve correctly. */
 int
 fs_setcwd (char *pathname)
 	{
@@ -1036,11 +900,7 @@ fs_setcwd (char *pathname)
 		return -1;
 		}
 
-	/* FIX: Use ParsePath instead of fs_vol_last_component_type.
-	 * fs_vol_last_component_type only searches the original root directory
-	 * loaded at format time and cannot find directories created afterward.
-	 * ParsePath walks the live on-disk directory tree and finds any
-	 * directory regardless of when it was created. */
+	/* use ParsePath so we can find dirs created after the volume was formatted */
 	parsepath_info ppi;
 	if (ParsePath (canon, &ppi) != 0)
 		{
@@ -1078,20 +938,14 @@ fs_setcwd (char *pathname)
 	}
 
 
-/* ---------------------------------------------------------------
- * fs_isFile
- *
- * Returns 1 if the given path refers to a regular file,
- * or 0 if it doesn't exist, is a directory, or path is NULL.
- * --------------------------------------------------------------- */
+/* fs_isFile -- returns 1 if path is a regular file, 0 otherwise */
 int
 fs_isFile (char *filename)
 	{
 	if (filename == NULL)
 		return 0;
 
-	/* FIX: Use ParsePath instead of fs_vol_last_component_type so we
-	 * can find files created after the volume was formatted. */
+	/* use ParsePath so newly created files are found too */
 	parsepath_info ppi;
 	if (ParsePath (filename, &ppi) != 0)
 		return 0;
@@ -1111,20 +965,14 @@ fs_isFile (char *filename)
 	}
 
 
-/* ---------------------------------------------------------------
- * fs_isDir
- *
- * Returns 1 if the given path refers to a directory,
- * or 0 if it doesn't exist, is a regular file, or path is NULL.
- * --------------------------------------------------------------- */
+/* fs_isDir -- returns 1 if path is a directory, 0 otherwise */
 int
 fs_isDir (char *pathname)
 	{
 	if (pathname == NULL)
 		return 0;
 
-	/* FIX: Use ParsePath instead of fs_vol_last_component_type so we
-	 * can find directories created after the volume was formatted. */
+	/* use ParsePath so newly created directories are found too */
 	parsepath_info ppi;
 	if (ParsePath (pathname, &ppi) != 0)
 		return 0;
@@ -1345,32 +1193,8 @@ fs_rename (const char *src, const char *dst)
 	return 0;
 	}
 	
-/* ---------------------------------------------------------------
- * fs_stat
- *
- * Fills in a fs_stat struct with metadata about the file or
- * directory at the given path. This is similar to the standard
- * POSIX stat() call -- it lets programs inspect a file's size,
- * timestamps, and disk usage without actually reading its data.
- *
- * We use ParsePath to walk to the entry on disk, then copy the
- * relevant fields from the fs_dirent_t into buf.
- *
- * Special case: if the path is "/" we read the "." entry from
- * root (index 0) since root has no parent entry to look up.
- *
- * Fields filled in:
- *   st_size        -- exact byte size stored in the directory entry
- *   st_blksize     -- our volume's block size (from the superblock)
- *   st_blocks      -- number of 512-byte units the entry occupies
- *                     (POSIX convention is always 512-byte units
- *                     regardless of actual block size)
- *   st_accesstime  -- time the entry was last accessed
- *   st_modtime     -- time the entry's content was last modified
- *   st_createtime  -- time the entry was originally created
- *
- * Returns 0 on success, -1 on error (errno set).
- * --------------------------------------------------------------- */
+/* fs_stat -- fills buf with metadata about the file or directory at path.
+ * special case: path "/" reads from root's "." entry since root has no parent. */
 int
 fs_stat (const char *path, struct fs_stat *buf)
 	{

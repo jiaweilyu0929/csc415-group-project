@@ -62,6 +62,8 @@ vol_reset_buf_cursor (b_fcb *f)
 	f->index = 0;
 	}
 
+/* reads from a volume-backed file using LBAread one block at a time.
+ * stops early if we hit the real file size to avoid reading padding. */
 static int
 b_read_volume (b_io_fd fd, char *buffer, int count)
 	{
@@ -102,6 +104,8 @@ b_read_volume (b_io_fd fd, char *buffer, int count)
 	return copied;
 	}
 
+/* writes to a volume-backed file. does a read-modify-write per block
+ * so partial writes don't clobber data already on disk. */
 static int
 b_write_volume (b_io_fd fd, const char *buffer, int count)
 	{
@@ -193,7 +197,8 @@ b_io_fd b_open (char * filename, int flags)
 	mfs_b_open_ctx ctx;
 	memset (&ctx, 0, sizeof (ctx));
 
-	/* Try volume path first; fallback to Linux file if not found there. */
+	/* try to find the file in our volume first; if that fails
+	 * fall back to opening it as a regular Linux file */
 	if (mfs_volume_open (filename, flags, &ctx) == 0)
 		{
 		size_t bsz = (ctx.fs_block_size > 0) ? (size_t) ctx.fs_block_size
@@ -320,15 +325,14 @@ int b_read (b_io_fd fd, char * buffer, int count)
 
 	if ((fd < 0) || (fd >= MAXFCBS))
 		return (-1);
-	/* Route volume-backed files to our LBAread-based helper above.
- 	* When b_open() found the file inside our filesystem, it set
- 	* vol_open = 1. In that case fd == -1, so calling read(fd, ...)
- 	* would fail — we must use LBAread through b_read_volume instead. */
+	/* vol_open means the file lives on our volume, not the host OS,
+	 * so we use LBAread instead of the regular read() call. */
 	if (fcbArray[fd].vol_open)
 		return b_read_volume (fd, buffer, count);
 
 	int bytesCopied = 0;
 
+	/* drain whatever is left in the buffer from a previous read */
 	int available = fcbArray[fd].buflen - fcbArray[fd].index;
 
 	if (available > 0)
@@ -343,6 +347,8 @@ int b_read (b_io_fd fd, char * buffer, int count)
 
 	int remaining = count - bytesCopied;
 
+	/* if we still need a full block or more, read directly into the
+	 * caller's buffer to avoid an extra copy through our internal buf */
 	if (remaining >= BLOCK_SIZE)
 		{
 		int blocks = remaining / BLOCK_SIZE;
@@ -356,6 +362,8 @@ int b_read (b_io_fd fd, char * buffer, int count)
 
 	remaining = count - bytesCopied;
 
+	/* less than a block left -- read a full block into our buffer
+	 * and copy only what the caller actually needs */
 	if (remaining > 0)
 		{
 		int bytes = read (fcbArray[fd].fd, fcbArray[fd].buf, BLOCK_SIZE);
@@ -384,7 +392,7 @@ int b_close (b_io_fd fd)
 
 	if (fcbArray[fd].vol_open)
 		{
-		/* Push final size back to directory entry and free parent_dir. */
+		/* save final file size to the directory entry before closing */
 		mfs_volume_close (&fcbArray[fd].vol, fcbArray[fd].vol_file_size);
 		fcbArray[fd].vol_open = 0;
 		memset (&fcbArray[fd].vol, 0, sizeof (fcbArray[fd].vol));
