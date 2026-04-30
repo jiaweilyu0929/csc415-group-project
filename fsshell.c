@@ -361,13 +361,19 @@ int cmd_cp (int argcnt, char *argvec[])
 ****************************************************/
 int cmd_mv (int argcnt, char *argvec[])
 	{
-#if (CMDMV_ON == 1)				
-	return -99;
-	// **** TODO ****  For you to implement	
+#if (CMDMV_ON == 1)
+	if (argcnt != 3)
+		{
+		printf ("Usage: mv source dest\n");
+		return -1;
+		}
+	int ret = fs_rename (argvec[1], argvec[2]);
+	if (ret != 0)
+		printf ("mv: error moving '%s' to '%s'\n", argvec[1], argvec[2]);
+	return ret;
 #endif
 	return 0;
 	}
-
 /****************************************************
 *  Make Directory commmand
 ****************************************************/
